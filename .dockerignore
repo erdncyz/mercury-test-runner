@@ -1,0 +1,7 @@
+node_modules
+data
+reports
+graphify-out
+.env
+*.log
+tools

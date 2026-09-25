@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Mercury Test Runner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5v14l11-7L7 5Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+    <symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  </svg>
+
+  <div id="gate" class="gate" hidden>
+    <main class="gate-inner" aria-labelledby="gate-title">
+      <div class="brand-mark" aria-hidden="true"><span>M</span></div>
+      <h1 id="gate-title">Mercury Test Runner</h1>
+      <p class="gate-lead">Kurulumuna giriş yap veya erişim iste.</p>
+
+      <div class="segmented tabs" role="tablist" aria-label="Giriş seçenekleri">
+        <button type="button" role="tab" id="tab-login" aria-selected="true" aria-controls="login-form">Giriş yap</button>
+        <button type="button" role="tab" id="tab-register" aria-selected="false" aria-controls="register-form">Kayıt ol</button>
+      </div>
+
+      <form id="login-form" class="stack" role="tabpanel" aria-labelledby="tab-login" novalidate>
+        <div class="field">
+          <label for="login-email">E-posta</label>
+          <input id="login-email" name="email" type="email" autocomplete="username" placeholder="ad@firma.com" required>
+        </div>
+        <div class="field">
+          <label for="login-password">Şifre</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <p id="login-error" class="notice error" role="alert" hidden></p>
+        <button type="submit" class="btn primary lg block">Devam et</button>
+        <p class="hint center">İlk kurulum hesabı: <code>mercury@test.com</code> · <code>Mercury</code></p>
+      </form>
+
+      <form id="register-form" class="stack" role="tabpanel" aria-labelledby="tab-register" hidden novalidate>
+        <div class="field">
+          <label for="register-email">E-posta</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" placeholder="ad@firma.com" required>
+        </div>
+        <div class="field">
+          <label for="register-password">Şifre</label>
+          <input id="register-password" name="password" type="password" minlength="8" autocomplete="new-password" required>
+          <p class="hint">En az 8 karakter. Hesabın, admin onaylayana kadar beklemede kalır.</p>
+        </div>
+        <p id="register-note" class="notice" role="status" hidden></p>
+        <button type="submit" class="btn primary lg block">Erişim iste</button>
+      </form>
+    </main>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="topbar-row">
+        <a href="#/chat" class="logo" aria-label="Mercury Test Runner ana sayfa">
+          <span class="brand-mark sm" aria-hidden="true"><span>M</span></span>
+          <span class="logo-text">Mercury</span>
+        </a>
+        <span class="crumb-sep" aria-hidden="true">/</span>
+        <span class="workspace">Test Runner</span>
+        <div class="top-right">
+          <button type="button" id="update" class="pill info" hidden></button>
+          <button type="button" id="model-chip" class="pill"><span class="dot"></span><span class="pill-text"></span></button>
+          <div class="menu-wrap">
+            <button type="button" id="user-button" class="avatar-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu"><span id="avatar"></span></button>
+            <div id="user-menu" class="menu" role="menu" hidden>
+              <div class="menu-head">
+                <strong id="who-email" class="truncate"></strong>
+                <span id="who-role" class="badge"></span>
+              </div>
+              <div class="menu-meta" id="version"></div>
+              <button type="button" id="logout" class="menu-item" role="menuitem"><svg class="icon"><use href="#i-logout"/></svg>Çıkış yap</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <nav class="tabs-nav" aria-label="Ana menü">
+        <a href="#/chat" data-view="chat">Chat</a>
+        <a href="#/history" data-view="history">Geçmiş</a>
+        <a href="#/runs" data-view="runs">Koşumlar</a>
+        <a href="#/configs" data-view="configs">Konfigürasyonlar</a>
+        <a href="#/settings" data-view="settings" data-admin>Ayarlar</a>
+        <a href="#/people" data-view="people" data-admin>Üyeler <span id="pending-count" class="count" hidden></span></a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section id="view-chat" class="view chat" aria-label="Chat">
+        <div id="model-banner" class="banner" hidden></div>
+        <div id="thread" class="thread" aria-live="polite"></div>
+        <div class="composer-dock">
+          <div id="suggestions" class="suggestions" aria-label="Hızlı komutlar"></div>
+          <form id="chat-form" class="composer">
+            <label for="chat-input" class="sr-only">Mesaj</label>
+            <textarea id="chat-input" name="message" rows="1" placeholder="Bir koşum iste… örn. örnek proje web chrome koş" autocomplete="off"></textarea>
+            <button type="submit" class="send" aria-label="Gönder"><svg class="icon"><use href="#i-arrow-up"/></svg></button>
+          </form>
+          <p class="hint center">Enter ile gönder · Shift+Enter yeni satır · Ön kontrolü geçen her koşum yeni bir TestRail run açar</p>
+        </div>
+      </section>
+
+      <section id="view-history" class="view page history-page" aria-labelledby="history-title" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="history-title">Chat geçmişi</h1>
+            <p id="history-owner" class="muted"></p>
+          </div>
+          <a href="#/chat" class="btn primary">Yeni chat</a>
+        </div>
+        <div class="history-toolbar">
+          <div class="search-box">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <label for="history-search" class="sr-only">Chat geçmişimde ara</label>
+            <input id="history-search" type="search" placeholder="Mesajlarda ve yanıtlarda ara" autocomplete="off">
+          </div>
+          <span id="history-info" class="muted small" role="status"></span>
+        </div>
+        <div id="history-list" class="history-list" aria-live="polite"></div>
+      </section>
+
+      <section id="view-runs" class="view page" aria-labelledby="runs-title" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="runs-title">Koşumlar</h1>
+            <p class="muted">Her komut yeni bir koşum ve TestRail run açar. Satıra tıklayınca adımlar açılır.</p>
+          </div>
+          <button type="button" id="runs-refresh" class="btn secondary"><svg class="icon"><use href="#i-refresh"/></svg>Yenile</button>
+        </div>
+        <div id="run-stats" class="stats"></div>
+        <div id="run-filters" class="segmented" role="group" aria-label="Duruma göre filtrele"></div>
+        <div id="run-list"></div>
+      </section>
+
+      <section id="view-configs" class="view page" aria-labelledby="configs-title" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="configs-title">Konfigürasyonlar</h1>
+            <p class="muted">Her satır bir koşum planıdır: platform, uygulama, cihazlar, paralellik, test kullanıcısı ve case kapsamı. Chat takma adlarla bu satırları koşar.</p>
+          </div>
+          <button type="button" id="config-new" class="btn primary" data-admin hidden><svg class="icon"><use href="#i-plus"/></svg>Yeni konfigürasyon</button>
+        </div>
+        <div id="config-list" class="stack-lg"></div>
+      </section>
+
+      <section id="view-settings" class="view page" aria-labelledby="settings-title" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="settings-title">Ayarlar</h1>
+            <p class="muted">Kurulumun bağlantıları. Anahtar ve şifreler veritabanında şifreli saklanır.</p>
+          </div>
+        </div>
+        <div class="settings-layout">
+          <nav id="settings-nav" class="settings-nav" aria-label="Ayar bölümleri"></nav>
+          <div id="settings-body" class="stack-lg"></div>
+        </div>
+      </section>
+
+      <section id="view-people" class="view page" aria-labelledby="people-title" hidden>
+        <div class="page-head">
+          <div>
+            <h1 id="people-title">Üyeler</h1>
+            <p class="muted">Kayıt isteklerini onayla, rol ver veya reddet.</p>
+          </div>
+        </div>
+        <div id="people-list"></div>
+      </section>
+    </main>
+
+    <div id="drawer-scrim" class="scrim" hidden></div>
+    <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-head">
+        <h2 id="drawer-title">Koşum</h2>
+        <button type="button" id="drawer-close" class="icon-btn" aria-label="Kapat"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+
+    <dialog id="config-dialog" class="dialog wide">
+      <form id="config-form" method="dialog" novalidate>
+        <div class="dialog-head">
+          <div>
+            <h2 id="config-dialog-title">Konfigürasyon</h2>
+            <p id="config-dialog-client" class="muted small"></p>
+          </div>
+          <button type="button" id="config-dialog-close" class="icon-btn" aria-label="Kapat"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="dialog-body stack-lg">
+          <div id="config-summary" class="plan-summary" role="status" aria-live="polite"></div>
+
+          <fieldset class="form-section">
+            <legend>Temel</legend>
+            <div class="grid-2">
+              <div class="field" id="config-client-field">
+                <label for="config-client">Client</label>
+                <select id="config-client"></select>
+              </div>
+              <div class="field">
+                <label for="config-platform">Platform</label>
+                <select id="config-platform">
+                  <option value="web">Web (Chrome)</option>
+                  <option value="android">Android</option>
+                  <option value="ios">iOS</option>
+                  <option value="tv">Smart TV</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid-2" id="config-new-client" hidden>
+              <div class="field">
+                <label for="config-client-name">Yeni client adı</label>
+                <input id="config-client-name" placeholder="Mobil Uygulama">
+              </div>
+              <div class="field">
+                <label for="config-suite-id">TestRail suite numarası</label>
+                <input id="config-suite-id" inputmode="numeric" placeholder="19">
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label for="config-name">Konfigürasyon adı</label>
+                <input id="config-name" required placeholder="Mobile Android (Current Version)">
+              </div>
+              <div class="field">
+                <label for="config-environment">Ortam</label>
+                <input id="config-environment" placeholder="test">
+                <p class="field-help">Test hesabı bu ortamdan alınır (test, regression, prod).</p>
+              </div>
+            </div>
+            <div class="field">
+              <label for="config-aliases">Chat takma adları</label>
+              <input id="config-aliases" placeholder="android, mobil android">
+              <p class="field-help">Virgülle ayır. Chat bu ifadelerle bu satırı seçer; aynı client'ta iki satır aynı takma adı kullanamaz.</p>
+            </div>
+            <div class="check-row">
+              <label><input id="config-enabled" type="checkbox"> Aktif</label>
+              <label><input id="config-regression" type="checkbox"> Regresyon planına dahil</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Uygulama</legend>
+            <div class="field" data-for="web">
+              <label for="config-launch-url">Başlangıç URL’si</label>
+              <input id="config-launch-url" type="url" placeholder="https://uygulama.firma.com">
+            </div>
+            <div class="grid-2" data-for="mobile">
+              <div class="field">
+                <label for="config-package-id">Paket kimliği</label>
+                <input id="config-package-id" placeholder="com.firma.uygulama">
+                <p class="field-help">Android applicationId veya iOS bundle id. Midscene uygulamayı bununla açar.</p>
+              </div>
+              <div class="field">
+                <label for="config-app-url">APK/IPA adresi (opsiyonel)</label>
+                <input id="config-app-url" type="url" placeholder="https://depo.firma/app-latest.apk">
+                <p class="field-help">Doluysa Farm her koşumdan önce bunu her cihaza kurar.</p>
+              </div>
+            </div>
+            <p class="field-help" data-for="tv">Smart TV yürütücüsü henüz yok; satır kaydedilir ama koşmaz.</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Cihazlar ve paralel koşum</legend>
+            <div class="grid-2">
+              <div class="field">
+                <label for="config-parallel">Paralel koşum sayısı</label>
+                <input id="config-parallel" type="number" min="1" max="20" step="1" inputmode="numeric">
+                <p class="field-help" id="config-parallel-help">Case'ler bu sayıda hatta bölünür; her hat ayrı tarayıcı veya cihazda aynı anda koşar.</p>
+              </div>
+              <div class="field" data-for="mobile">
+                <label for="config-device-filter">Cihaz filtresi (UDID yoksa)</label>
+                <input id="config-device-filter" placeholder="Pixel, Galaxy, iPhone 15…">
+                <p class="field-help">Üretici, model veya ada göre Farm'daki boş cihazlardan seçer.</p>
+              </div>
+            </div>
+            <div class="field" data-for="mobile">
+              <label for="config-serials">Cihaz UDID'leri</label>
+              <textarea id="config-serials" rows="3" spellcheck="false" placeholder="Her satıra bir UDID / seri&#10;00008110-001A2B3C4D5E6F7G&#10;R58N12ABCDE"></textarea>
+              <p class="field-help" id="config-serials-help">Girilirse yalnız bu cihazlar kullanılır. Paralel koşum sayısı kadar UDID gerekir; fazlası yedek havuzdur.</p>
+            </div>
+            <div class="field" data-for="mobile">
+              <label for="config-device-wait">Boş cihaz bekleme süresi (dakika)</label>
+              <input id="config-device-wait" type="number" min="1" max="1440" step="1" inputmode="numeric">
+              <p class="field-help">Gereken cihazlar doluysa koşum sırada bekler; bu süre dolarsa başarısız sayılır. Örn. smoke için 5, gece regresyonu için 120.</p>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Test kullanıcısı</legend>
+            <div class="grid-2">
+              <div class="field">
+                <label for="config-account-source">Hesap kaynağı</label>
+                <select id="config-account-source"></select>
+              </div>
+              <div class="field">
+                <label for="config-account-policy">Kullanım</label>
+                <select id="config-account-policy">
+                  <option value="none">Kullanma</option>
+                  <option value="optional">Opsiyonel — alınamazsa hesapsız koş</option>
+                  <option value="required">Zorunlu — alınamazsa koşma</option>
+                </select>
+              </div>
+            </div>
+            <div id="config-account-filters" class="grid-2"></div>
+            <p class="field-help">Her paralel hat ayrı bir test kullanıcısı alır; kullanıcı alındığı anda kilitlenir, iki hat aynı hesabı kullanmaz. YAML'da <code>{{account.email}}</code>, <code>{{account.password}}</code>, <code>{{account.phone}}</code> ile kullanılır.</p>
+            <p id="config-account-credentials" class="notice" hidden></p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Case kapsamı</legend>
+            <div class="grid-2">
+              <div class="field">
+                <label for="config-case-ids">Case ID'leri</label>
+                <input id="config-case-ids" placeholder="1201, 1202">
+              </div>
+              <div class="field">
+                <label for="config-case-tags">Case etiketleri</label>
+                <input id="config-case-tags" placeholder="regression, login">
+              </div>
+            </div>
+            <p class="field-help">Case ID girilirse önceliklidir. Boşsa etiketler, ikisi de boşsa client'ın tüm YAML case'leri seçilir.</p>
+          </fieldset>
+
+          <p id="config-form-result" class="notice" hidden></p>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" id="config-cancel" class="btn secondary">Vazgeç</button>
+          <button type="submit" id="config-save" class="btn primary">Kaydet</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="source-dialog" class="dialog wide">
+      <form id="source-form" method="dialog" novalidate>
+        <div class="dialog-head">
+          <div>
+            <h2 id="source-dialog-title">Hesap kaynağı</h2>
+            <p id="source-dialog-lead" class="muted small">Test kullanıcılarının nereden alınacağını tanımla. Her proje kendi servisini veya kendi listesini kullanabilir.</p>
+          </div>
+          <button type="button" id="source-dialog-close" class="icon-btn" aria-label="Kapat"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="dialog-body stack-lg">
+          <fieldset class="form-section">
+            <legend>Temel</legend>
+            <div class="grid-2">
+              <div class="field">
+                <label for="src-name">Kaynak adı</label>
+                <input id="src-name" required placeholder="Örn. Staging kullanıcıları">
+              </div>
+              <div class="field">
+                <label for="src-scope">Kapsam</label>
+                <select id="src-scope"></select>
+                <p class="field-help">“Tüm client'lar” seçilirse her projenin konfigürasyonu bu kaynağı kullanabilir.</p>
+              </div>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label for="src-type">Tür</label>
+                <select id="src-type">
+                  <option value="http">HTTP servis — kullanıcıları bir API'den al</option>
+                  <option value="manual">Elle girilen liste — kullanıcıları buraya yaz</option>
+                </select>
+              </div>
+              <div class="field" id="src-template-field">
+                <label for="src-template">Şablondan başlat (opsiyonel)</label>
+                <select id="src-template"></select>
+                <p class="field-help">Hazır bir servis tanımıyla alanları doldurur; sonra değiştirebilirsin.</p>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" data-type="http">
+            <legend>Servis ve kimlik doğrulama</legend>
+            <div class="field">
+              <label for="src-base-url">Servis adresi</label>
+              <input id="src-base-url" type="url" placeholder="https://test-users.firma.com">
+            </div>
+            <div class="field">
+              <label for="src-auth-type">Kimlik doğrulama</label>
+              <select id="src-auth-type">
+                <option value="none">Yok — servis açık</option>
+                <option value="login">Giriş isteği → token</option>
+                <option value="header">Sabit API anahtarı (başlık)</option>
+                <option value="basic">Basic auth (kullanıcı + şifre)</option>
+              </select>
+            </div>
+            <div class="grid-2" data-auth="login basic">
+              <div class="field">
+                <label for="src-cred-user">Servis kullanıcı adı / e-posta</label>
+                <input id="src-cred-user" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="src-cred-pass">Servis şifresi</label>
+                <input id="src-cred-pass" type="password" autocomplete="new-password">
+                <p class="field-help">Şifreli saklanır, geri gösterilmez.</p>
+              </div>
+            </div>
+            <div class="field" data-auth="header">
+              <label for="src-cred-secret">API anahtarı</label>
+              <input id="src-cred-secret" type="password" autocomplete="new-password">
+            </div>
+            <div class="grid-2" data-auth="login">
+              <div class="field">
+                <label for="src-auth-path">Giriş isteği</label>
+                <div class="inline-form">
+                  <select id="src-auth-method" class="method"><option>POST</option><option>GET</option><option>PUT</option></select>
+                  <input id="src-auth-path" placeholder="/api/auth">
+                </div>
+              </div>
+              <div class="field">
+                <label for="src-token-path">Yanıttaki token alanı</label>
+                <input id="src-token-path" placeholder="token veya data.accessToken">
+              </div>
+            </div>
+            <div class="field" data-auth="login">
+              <label for="src-auth-body">Giriş isteği gövdesi (JSON)</label>
+              <textarea id="src-auth-body" rows="3" spellcheck="false" placeholder='{"email": "{{username}}", "password": "{{password}}"}'></textarea>
+              <p class="field-help"><code>{{username}}</code> ve <code>{{password}}</code> yukarıdaki servis giriş bilgileriyle değişir.</p>
+            </div>
+            <div class="grid-2" data-auth="login header">
+              <div class="field">
+                <label for="src-token-header">Başlık adı</label>
+                <input id="src-token-header" placeholder="Authorization">
+              </div>
+              <div class="field">
+                <label for="src-token-prefix">Değer öneki (opsiyonel)</label>
+                <input id="src-token-prefix" placeholder="Bearer ">
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" data-type="http">
+            <legend>Hesap listesi ve alan eşlemesi</legend>
+            <div class="grid-2">
+              <div class="field">
+                <label for="src-list-path">Hesap listesi isteği</label>
+                <div class="inline-form">
+                  <select id="src-list-method" class="method"><option>GET</option><option>POST</option><option>PUT</option></select>
+                  <input id="src-list-path" placeholder="/api/users">
+                </div>
+              </div>
+              <div class="field">
+                <label for="src-items-path">Yanıtta liste alanı (opsiyonel)</label>
+                <input id="src-items-path" placeholder="boş = yanıtın kendisi · örn. data.items">
+              </div>
+            </div>
+            <div class="field">
+              <label for="src-list-params">Filtre parametreleri (JSON)</label>
+              <textarea id="src-list-params" rows="3" spellcheck="false" placeholder='{"environment": "test", "isLocked": false, "userPackage": "FULL"}'></textarea>
+              <p class="field-help">GET'te sorgu parametresi, diğerlerinde istek gövdesi olur. <code>environment</code> konfigürasyonun ortamıyla değişir; buradaki diğer alanlar (is… hariç) her konfigürasyonda ayrıca filtrelenebilir.</p>
+            </div>
+            <div class="grid-2">
+              <div class="field"><label for="src-f-email">Kullanıcı adı / e-posta alanı</label><input id="src-f-email" placeholder="email"></div>
+              <div class="field"><label for="src-f-password">Şifre alanı</label><input id="src-f-password" placeholder="password"></div>
+              <div class="field"><label for="src-f-phone">Telefon alanı</label><input id="src-f-phone" placeholder="phoneNumber"></div>
+              <div class="field"><label for="src-f-id">Kimlik alanı</label><input id="src-f-id" placeholder="_id"></div>
+            </div>
+            <div class="field">
+              <label for="src-extras">Ek alanlar (opsiyonel)</label>
+              <textarea id="src-extras" rows="2" spellcheck="false" placeholder="pin=profile.pin&#10;country=countryCode"></textarea>
+              <p class="field-help">Her satır <code>ad=yanıttaki alan</code>. YAML'da <code>{{account.ad}}</code> olarak kullanılır. Nokta ile iç alanlara inilir.</p>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" data-type="http">
+            <legend>Kullanıldı işareti (opsiyonel)</legend>
+            <div class="field">
+              <label for="src-mark-path">İstek</label>
+              <div class="inline-form">
+                <select id="src-mark-method" class="method"><option>PUT</option><option>POST</option><option>PATCH</option><option>DELETE</option></select>
+                <input id="src-mark-path" placeholder="/api/users/{{id}} · boş = işaretleme">
+              </div>
+            </div>
+            <div class="field">
+              <label for="src-mark-body">Gövde (JSON)</label>
+              <textarea id="src-mark-body" rows="2" spellcheck="false" placeholder='{"isLocked": true}'></textarea>
+              <p class="field-help">Hesap alındığı anda gönderilir; başka koşum aynı kullanıcıyı almaz. <code>{{id}}</code> ve <code>{{email}}</code> kullanılabilir.</p>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section" data-type="manual">
+            <legend>Hesaplar</legend>
+            <div class="field">
+              <label for="src-use-mode">Kullanım</label>
+              <select id="src-use-mode">
+                <option value="reuse">Tekrar kullanılabilir — koşum boyunca kilitlenir, sonra havuza döner</option>
+                <option value="once">Tek kullanımlık — bir kez kullanılınca bir daha verilmez</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="src-accounts">Hesap listesi</label>
+              <textarea id="src-accounts" rows="6" spellcheck="false" placeholder="kullanici1@firma.com, Sifre123, 5551112233&#10;kullanici2@firma.com, Sifre456"></textarea>
+              <p class="field-help">Her satır: kullanıcı adı/e-posta, şifre, telefon (opsiyonel). Virgül, noktalı virgül veya Excel'den yapıştırılmış sekme ile ayrılabilir. Kayıtlı şifreler <code>••••••••</code> görünür; değiştirmezsen korunur.</p>
+            </div>
+            <div class="inline-form" id="src-accounts-state"></div>
+          </fieldset>
+
+          <div id="src-test-result" class="notice" hidden></div>
+        </div>
+        <div class="dialog-foot">
+          <button type="button" id="src-test" class="btn secondary" style="margin-right:auto">Bağlantıyı dene</button>
+          <button type="button" id="src-cancel" class="btn secondary">Vazgeç</button>
+          <button type="submit" id="src-save" class="btn primary">Kaydet</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

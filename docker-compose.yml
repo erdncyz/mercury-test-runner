@@ -1,0 +1,9 @@
+services:
+  mercury-test-runner:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - mercury-data:/data
+volumes:
+  mercury-data:

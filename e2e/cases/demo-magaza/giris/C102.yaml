@@ -1,0 +1,21 @@
+testrailCaseId: 102
+client: Demo Mağaza
+section: Giriş
+tags: [giris]
+
+cases:
+  - name: "C102 Hatalı şifre reddedilir"
+    tags: [giris]
+    steps:
+      - launch:
+          uri: "{{launchUrl}}"
+      - aiAct: "Çerez bandı varsa kabul et"
+      - aiInput:
+          locate: "E-posta alanı"
+          value: "{{account.email}}"
+      - aiInput:
+          locate: "Şifre alanı"
+          value: "kesinlikle-yanlis-sifre"
+      - aiTap: "Giriş yap butonu"
+      - aiAssert: "Hatalı giriş uyarısı görünür"
+      - aiAssert: "Giriş formu hâlâ görünür"

@@ -1,0 +1,14 @@
+testrailCaseId: 103
+client: Demo Mağaza
+section: Giriş
+tags: [giris, negatif]
+
+# Negatif kontrol: giriş yapılmadan üye alanı beklenir; bu case'in başarısız olması gerekir.
+cases:
+  - name: "C103 Giriş yapmadan üye alanı görünmez (bilerek başarısız)"
+    tags: [giris, negatif]
+    steps:
+      - launch:
+          uri: "{{launchUrl}}"
+      - aiAssert: "Üye oturumu açılmış"
+      - aiTap: "Giriş yap butonu"

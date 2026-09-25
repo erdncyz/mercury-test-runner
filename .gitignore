@@ -1,0 +1,9 @@
+node_modules/
+data/
+reports/
+.env
+*.log
+midscene_run/
+tools/
+graphify-out/
+.DS_Store

@@ -1,0 +1,25 @@
+{
+  "name": "mercury-test-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mercury Test Runner — local Midscene and TestRail runner",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "prestart": "node scripts/setup.mjs",
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.mjs",
+    "midscene:upgrade": "npm install --save-exact @midscene/web@latest @midscene/android@latest @midscene/ios@latest @midscene/shared@latest playwright@latest && node scripts/setup.mjs",
+    "test:e2e": "node e2e/run.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@midscene/android": "1.13.3",
+    "@midscene/ios": "1.13.3",
+    "@midscene/shared": "1.13.3",
+    "@midscene/web": "1.13.3",
+    "playwright": "1.63.0"
+  }
+}

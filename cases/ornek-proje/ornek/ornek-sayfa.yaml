@@ -1,0 +1,17 @@
+# Örnek case: example.com'u açar ve sayfanın içeriğini Midscene ile doğrular.
+# Kendi case'lerini bu dosyayı kopyalayarak yaz. Klasör adı serbesttir; eşleşme `client:` satırıyla yapılır.
+# TestRail'e sonuç yazmak için en üste `testrailCaseId: <case numarası>` satırını ekle.
+# Kullanılabilen değişkenler: {{launchUrl}}, {{account.email}}, {{account.password}}, {{account.phone}}
+# ve hesap kaynağındaki ek alanlar ({{account.<ad>}}).
+client: Örnek Proje
+section: Örnek
+tags: [ornek, smoke]
+
+cases:
+  - name: "Örnek sayfa açılır ve içerik görünür"
+    tags: [ornek, smoke]
+    steps:
+      - launch:
+          uri: "{{launchUrl}}"
+      - aiAssert: "Sayfada 'Example Domain' başlığı görünür"
+      - aiAssert: "Başlığın altında açıklama metni ve bir bağlantı var"

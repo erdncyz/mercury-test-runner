@@ -1,0 +1,21 @@
+testrailCaseId: 101
+client: Demo Mağaza
+section: Giriş
+tags: [giris, smoke]
+
+cases:
+  - name: "C101 Geçerli test kullanıcısıyla giriş"
+    tags: [giris, smoke]
+    steps:
+      - launch:
+          uri: "{{launchUrl}}"
+      - aiAct: "Çerez bandı varsa kabul et"
+      - aiInput:
+          locate: "E-posta alanı"
+          value: "{{account.email}}"
+      - aiInput:
+          locate: "Şifre alanı"
+          value: "{{account.password}}"
+      - aiTap: "Giriş yap butonu"
+      - aiWaitFor: "Üye alanı açıldı"
+      - aiAssert: "Üye oturumu açılmış, hoş geldin mesajı görünür"
