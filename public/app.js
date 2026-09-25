@@ -1876,6 +1876,7 @@ function settingsCard(section, data) {
 }
 
 const FAMILY_SOURCE_HINT = "Bu liste sağlayıcının modelleri değil; kurulu Midscene sürümünün tanıdığı model aileleridir. Midscene ekrandaki öğenin yerini modelin cevabından aileye göre okur, bu yüzden seçtiğin model gerçekten bu ailelerden birinden olmalı.";
+const MODEL_SPEED_HINT = "Hız: koşum süresinin neredeyse tamamı model cevabıdır, model seçimi hızı doğrudan değiştirir. Hızlı: flash / lite / mini, düşük düşünmeli (-low, -minimal) modeller, doğrudan adıyla (ör. agy/gemini-3.1-flash-lite, adım başı ~3–4 sn). Yavaş: auto/… takma adları, -high / thinking / pro modeller (adım başı 10–30 sn).";
 
 function familyName(families, id) {
   const found = (families || []).find((family) => family.id === id);
@@ -1928,6 +1929,7 @@ function modelCard(settings) {
             h("dt", {}, "Midscene ailesi"), h("dd", {}, ms.family ? `${familyName(ms.families, ms.family)}${ms.familySetting ? t(" (elle)") : t(" (otomatik)")}` : "—"),
           )
           : h("p", { class: "muted" }, "Henüz model bağlanmadı. Web koşumları bu durumda engellenir."),
+        h("p", { class: "hint" }, t(MODEL_SPEED_HINT)),
         status.ready && ms.error ? h("p", { class: "notice error", role: "alert" }, ms.error) : null,
         status.ready && !ms.error && familyWarning ? h("p", { class: "notice warn", role: "status" }, familyWarning) : null,
         status.ready
@@ -1965,6 +1967,7 @@ function modelCard(settings) {
         h("input", { id: "f-model", name: "model", type: "text", value: settings.model_name || "", placeholder: "listeden seç veya elle yaz", autocomplete: "off" }),
         listButton,
       ),
+      h("p", { class: "hint" }, t(MODEL_SPEED_HINT)),
     );
     const ms = status.midscene || {};
     const knownFamily = new Map(settings.model_name ? [[settings.model_name, ms.detectedFamily || ""]] : []);

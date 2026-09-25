@@ -83,12 +83,35 @@ npm run test:e2e  # gerçek Chromium + Midscene ile uçtan uca web testi (~1 dk)
 - Zaman aşımı: her adımın süresi sınırlıdır (varsayılan 180 sn, `MERCURY_STEP_TIMEOUT_MS`). `aiWaitFor` kendi `timeout` değeri + 30 sn, `sleep` kendi süresi + 5 sn alır; adımda `stepTimeout: <ms>` ile değiştirilebilir. Süresi dolan adım "zaman aşımı" ile düşer, case'in kalan adımları atlanır.
 - Yeniden deneme: yalnız güvenli durumda, bir kez (varsayılan, `MERCURY_STEP_RETRIES`; adımda `retry: 0` kapatır). Okuma ve doğrulama adımları (`aiAssert`, `aiString`/`aiNumber`/`aiBoolean`/`aiQuery`) ve öğesi bulunamadığı için hiçbir şey yapmamış eylemler yeniden denenir. `aiAct`, `aiWaitFor`, `launch`, zaman aşımına uğrayan adım ve model yetki hataları (401/403) denenmez. Sonuç adımda görünür: "2. denemede geçti · ilk deneme: …" (kararsızlık işareti) ya da "2 denemede de başarısız: …".
 - Midscene cache: aynı case tekrar koşulduğunda `aiAct` planları ve (yalnız web'de) öğe konumları modele yeniden sorulmaz; konum, öğenin metnini de içeren XPath ile doğrulanır, tutmazsa model yeniden sorulur. Cache case dosyası (yoksa TestRail id'si / senaryo başlığı), platform ve açılış adresi başına bir dosyadır: `MIDSCENE_RUN_DIR/cache/`. Çözülmüş metninde test kullanıcısının şifresi geçen `aiAct` cache'e yazılmaz. Kapatmak için `MERCURY_MIDSCENE_CACHE=0 npm start`; sıfırlamak için `cache/` klasörü silinir.
-- Hız: süre neredeyse tamamen model çağrılarıdır (adım ölçümlerinde `ai.timeMs` ≈ adım süresi). Yönlendiricilerin `auto/…` takma adları (ör. OmniRoute `auto/best-coding`) arka planda düşünme (reasoning) açık bir modele gidebilir; ölçümde aynı model `auto/…` ile çağrı başına 9–30 sn, doğrudan adıyla (`agy/gemini-3.1-flash-lite`) ~3–4 sn sürdü. Ekran sürüşü için modeli doğrudan adıyla seçin. Birden çok case'i olan konfigürasyonlarda "Paralel koşum" değeri case'leri aynı anda koşturur.
+- Hız: süre neredeyse tamamen model çağrılarıdır; model seçimi koşum hızını doğrudan belirler. Hangi modelin hızlı olduğu için bkz. [Model seçimi ve hız](#model-seçimi-ve-hız). Birden çok case'i olan konfigürasyonlarda "Paralel koşum" değeri case'leri aynı anda koşturur.
 - AI bağlamı: QA becerilerinin `## Midscene` bölümleri (en çok 2.000 karakter) Midscene'a ajan düzeyinde `aiContexts.default` olarak verilir; her AI çağrısı bu notları görür. Chat senaryosunda plan için seçilen becerilerin notları, kayıtlı YAML case'lerinde case başlığı, etiketleri ve adım metinleriyle seçilen becerilerin notları kullanılır. Projeye özel notlar (ör. "Giriş bağlantısı Hesabım menüsünün içinde") Ayarlar → QA becerileri'nden bir özel becerinin `## Midscene` bölümüne yazılır.
 - ADB anahtarı: Ayarlar → Mercury Farm → “Bağlantıyı dene” Farm erişimini doğrular ve bu sunucunun `adbkey.pub` anahtarını `POST /api/v1/user/adbPublicKeys` ile Farm'a kaydeder. Android cihazlar kayıtsız anahtarı reddeder.
 - Tarayıcıyı görmek için `MERCURY_HEADLESS=0 npm start`.
 - Şifre güvenliği: Midscene'in case raporu `aiInput` ile yazılan değeri içerir. Mercury raporu `reports/{id}/` altına kopyalarken (koşum sürerken her adımdan sonra yayınlanan ara kopyalar dahil) test kullanıcısının şifresini (düz, JSON ve HTML kaçışlı biçimleriyle) `••••••••` ile maskeler ve `MIDSCENE_RUN_DIR` içindeki maskesiz orijinali case bitince siler. Adım ekran görüntülerinde şifre alanı tarayıcı/uygulama tarafından zaten noktalı görünür. Midscene'in dosya günlükleri de yazılan değerleri tuttuğu ve döndürülmediği için varsayılan olarak kapalıdır; sorun giderirken `MERCURY_MIDSCENE_LOGS=1 npm start` ile açılır (günlükler şifre içerebilir).
 - `CASES_DIR`: case klasörü (varsayılan `cases/`).
+
+### Model seçimi ve hız
+
+Koşum süresinin neredeyse tamamı model cevabını beklemekle geçer: adım ölçümlerinde modelin süresi (`ai.timeMs`) adım süresine neredeyse eşittir, tarayıcı/cihaz, ekran görüntüsü ve rapor yazımı toplamda birkaç saniyedir. Bu yüzden **Ayarlar → Model'de seçilen model koşum hızını doğrudan belirler**; aynı case bir modelle 35 sn, başka bir modelle 2 dakikadan uzun sürebilir.
+
+Ölçüm (OmniRoute üzerinden, aynı ekran görüntüsünde tek öğe bulma çağrısı, önbelleksiz, 4'er deneme):
+
+| Model adı | Çağrı başına | Not |
+|---|---|---|
+| `agy/gemini-3.1-flash-lite` | ~3–4 sn | En hızlı ve en tutarlısı; düşünme (reasoning) yok. Önerilen. |
+| `agy/gemini-3.7-flash-low` | ~3.5–4 sn | Hızlı, düşük düşünme. |
+| `agy/gemini-3.6-flash-low` | ~3–4 sn (tek seferde 10 sn) | Hızlı, arada dalgalanıyor. |
+| `auto/best-coding`, `auto/best-vision`, `auto/best-fast` | 9–32 sn | Aynı `gemini-3.1-flash-lite`'a gitti ama her çağrıda 600–1900 gizli düşünme token'ı üretti. |
+
+Gerçek koşumda (beIN CONNECT giriş senaryosu) `auto/best-coding` → `agy/gemini-3.1-flash-lite` değişikliği aynı sonuçla kısa case'i 36 sn'den 18 sn'ye, uzun case'i 134 sn'den 37 sn'ye indirdi.
+
+Hız için model seçerken:
+
+- **Hızlı:** `flash`, `lite`, `mini` modeller; düşünmesi düşük olan varyantlar (`-low`, `-minimal`, `-none`). Modeli **doğrudan adıyla** seç (ör. `agy/gemini-3.1-flash-lite`).
+- **Yavaş:** `auto/…` yönlendirici takma adları (arkada hangi modele ve hangi düşünme düzeyine gideceği belli değildir; Midscene'ın "düşünme kapalı" ayarı yönlendiriciden geçmeyebilir), `-high`, `-xhigh`, `thinking`, `pro`, `opus` gibi derin düşünen modeller (adım başı 10–30 sn ve üstü).
+- Model ekranda öğe bulabilmeli (Midscene uyumlu listede olmalı); hızlı ama görsel olmayan modeller (ör. `coder`) koşumu engeller.
+- Yönlendiricideki model listesi zamanla değişir; yukarıdaki adlar bu sunucudaki OmniRoute'a göredir. Başka bir sağlayıcıda da aynı kural geçerlidir: en küçük görsel model, düşük düşünme, doğrudan ad.
+- Modelden bağımsız ek hızlandırmalar: Midscene cache (tekrar koşumlarda modele daha az sorulur) ve konfigürasyonda "Paralel koşum" (case'ler aynı anda koşar).
 
 ## Midscene güncelleme
 
@@ -150,7 +173,7 @@ Bittiğinde HTML oynatma, adım ekranları ve varsa video (web: webm, Android: m
 Ayar ekranı yalnız `admin` rolüne açıktır. Anahtarlar o kurulumun veritabanında durur. Sır alanlar `data/app.key` ile AES-256-GCM ile şifrelenir. Ekranda geriye yalnız maske döner.
 
 - Üyeler: admin, bekleyen kayıtları ve rolleri buradan yönetir.
-- Model: `model_api_key`, `model_name`, `model_base_url`, `model_family`. Midscene ekranı ve chat agent’ı aynı kaydı kullanır.
+- Model: `model_api_key`, `model_name`, `model_base_url`, `model_family`. Midscene ekranı ve chat agent’ı aynı kaydı kullanır. Model kartında ve "Modeli değiştir" formunda hangi modellerin hızlı/yavaş olduğunu anlatan kısa bir not görünür (bkz. [Model seçimi ve hız](#model-seçimi-ve-hız)).
 - TestRail: host, e-posta, API key, project id. Bağlantı denemesi `GET /api/v2/get_projects`.
 - Farm: Mercury base URL ve bearer token. Doğrulama `GET /api/v1/user`.
 - Uygulama paketleri: platform, ad, HTTPS üzerindeki `.apk` veya `.ipa` adresi, Android `applicationId` veya iOS bundle id. Bu bir disk yolu değildir.

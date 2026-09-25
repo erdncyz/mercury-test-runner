@@ -511,6 +511,7 @@
     "Model bağla": "Connect model",
     "Modelleri getir": "Fetch models",
     "Model adı": "Model name",
+    "Hız: koşum süresinin neredeyse tamamı model cevabıdır, model seçimi hızı doğrudan değiştirir. Hızlı: flash / lite / mini, düşük düşünmeli (-low, -minimal) modeller, doğrudan adıyla (ör. agy/gemini-3.1-flash-lite, adım başı ~3–4 sn). Yavaş: auto/… takma adları, -high / thinking / pro modeller (adım başı 10–30 sn).": "Speed: almost all of a run's time is the model's response, so the model choice directly changes speed. Fast: flash / lite / mini models with low thinking (-low, -minimal), selected by their direct name (e.g. agy/gemini-3.1-flash-lite, ~3–4 s per step). Slow: auto/… aliases, -high / thinking / pro models (10–30 s per step).",
     "listeden seç veya elle yaz": "select from the list or type manually",
     "\"{name}\" Midscene'ın tanıdığı bir aileye ait görünmüyor; bu modelle web ve mobil koşumlar engellenir. Listeden Midscene uyumlu bir model seç ya da modelin gerçek ailesini biliyorsan yukarıdan seç.": (p) => `"${p.name}" does not appear to belong to a family known by Midscene; web and mobile runs are blocked with this model. Select a Midscene-compatible model from the list, or choose its real family above if you know it.`,
     "Sağlayıcıyı seç, anahtarı yaz, modelleri getir ve Midscene uyumlu birini kullan. Ekran sürüşü ve chat agent'ı bu tek modeli paylaşır.": "Choose a provider, enter the key, fetch models, and use a Midscene-compatible one. Screen driving and the chat agent share this single model.",
