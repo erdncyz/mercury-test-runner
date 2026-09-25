@@ -42,6 +42,32 @@ export function deviceLabel(device) {
   return [name, device.version ? `${LABEL[devicePlatform(device)]} ${device.version}` : "", device.serial].filter(Boolean).join(" · ");
 }
 
+// Every device the token may book, for the configuration dialog's UDID picker.
+export async function listDevices(settings, { timeoutMs } = {}) {
+  const listed = ensureConfigured(await farmRequest(settings, `/api/v1/devices?${query({ target: "bookable", fields: DEVICE_FIELDS })}`, { timeoutMs }));
+  return (listed.devices || []).filter((device) => device?.serial).map((device) => ({
+    serial: String(device.serial),
+    platform: devicePlatform(device),
+    name: device.marketName || device.model || device.name || device.serial,
+    manufacturer: device.manufacturer || "",
+    version: device.version ? String(device.version) : "",
+    state: device.present === false || device.ready === false ? "offline" : isFreeDevice(device) ? "free" : "busy",
+  }));
+}
+
+// Serials of the `platform` devices a message names by model ("Galaxy S25 Ultra'da", "iPhone 17 Pro ile"). Names
+// match on whole words and the longest name wins, so "iPhone 17 Pro" does not also pick "iPhone 17". Several
+// devices of the same model all match; the run then takes whichever of them is free.
+export function devicesNamedIn(text, devices, platform) {
+  const folded = ` ${fold(text)} `;
+  const named = devices
+    .filter((device) => device.platform === platform)
+    .map((device) => ({ serial: device.serial, needle: fold(device.name) }))
+    .filter(({ needle }) => (/\d/.test(needle) || needle.includes(" ")) && folded.includes(` ${needle} `));
+  const longest = Math.max(0, ...named.map(({ needle }) => needle.length));
+  return named.filter(({ needle }) => needle.length === longest).map(({ serial }) => serial);
+}
+
 function captured(data, amount, known = []) {
   const group = data?.group || {};
   const devices = (group.devices || []).filter(Boolean).map((item) => {
@@ -99,10 +125,54 @@ export async function reserveDevice(settings, options) {
   return { groupId, device: devices[0] };
 }
 
-export async function useDevice(settings, serial) {
-  const data = ensureConfigured(await farmRequest(settings, "/api/v1/autotests/useDevice", { method: "POST", body: { serial } }));
+// The Farm provider opens the device tunnel (ADB / WebDriverAgent) on demand and can briefly answer
+// "Device is not responding (failed to connect to device)" while it comes up; such failures are retried.
+function isTransientConnectError(error) {
+  return error.status >= 500 || error.name === "TimeoutError" || /not responding|failed to connect/i.test(error.message);
+}
+
+function connectUrl(data) {
   if (!data.remoteConnectUrl) throw new Error("Farm cihaz bağlantı adresi döndürmedi");
   return String(data.remoteConnectUrl);
+}
+
+// A useDevice that times out (504) can still hand the device to our group, and Farm then refuses every further
+// useDevice with 403 "Device is currently in use or not available". Farm shows the owner the tunnel address on
+// the device; if the tunnel never started, remoteConnect starts it. Null when the device is not in our group
+// (`using` means owned by this Farm user, which every runner sharing the token is).
+async function ownedConnection(settings, serial, groupId) {
+  const path = `/api/v1/devices/${encodeURIComponent(serial)}?${query({ fields: "serial,owner,using,remoteConnect,remoteConnectUrl" })}`;
+  const device = ensureConfigured(await farmRequest(settings, path)).device || {};
+  if (!device.using || (groupId && device.owner?.group !== groupId)) return null;
+  if (device.remoteConnect && device.remoteConnectUrl) return String(device.remoteConnectUrl);
+  return connectUrl(ensureConfigured(await farmRequest(settings, `/api/v1/user/devices/${encodeURIComponent(serial)}/remoteConnect`, { method: "POST" })));
+}
+
+export async function useDevice(settings, serial, { groupId, attempts = 3, delayMs = 5_000 } = {}) {
+  let owned = false;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      if (!owned) return connectUrl(ensureConfigured(await farmRequest(settings, "/api/v1/autotests/useDevice", { method: "POST", body: { serial } })));
+      const url = await ownedConnection(settings, serial, groupId);
+      if (url === null) throw new Error("Farm cihazı bu koşumun grubundan çıktı");
+      return url;
+    } catch (caught) {
+      let error = caught;
+      if (!owned && error.status === 403) {
+        const reconnect = await ownedConnection(settings, serial, groupId).catch((failure) => failure);
+        if (typeof reconnect === "string") return reconnect;
+        if (reconnect === null || !isTransientConnectError(reconnect)) throw error;
+        owned = true;
+        error = reconnect;
+      }
+      if (!isTransientConnectError(error)) throw error;
+      if (attempt >= attempts) {
+        error.message = `Farm cihaz bağlantısını açamadı (${attempts} deneme): ${error.message}`;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
 }
 
 export async function installApp(settings, serial, url) {

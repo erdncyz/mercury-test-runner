@@ -66,6 +66,41 @@ test("genel bekleme süresi konfigürasyonlara taşınır, Android/iOS genel sı
   db = openDb(dir);
   assert.deepEqual([...new Set(db.prepare("SELECT device_wait_minutes AS m FROM configs").all().map((row) => row.m))], [90]);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM settings WHERE key IN ('device_wait_minutes', 'android_concurrency', 'ios_concurrency')").get().n, 0);
-  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'web_concurrency'").get().value, "2", "sunucunun tarayıcı sınırı kalır");
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'web_concurrency'").get().value, "", "sunucunun tarayıcı sınırı kalır (otomatik)");
+  db.close();
+});
+
+test("eski varsayılan tarayıcı sınırı 2 bir kez otomatiğe döner; sonradan yazılan 2 korunur", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mtr-mig-web-"));
+  let db = openDb(dir);
+  seed(db);
+  db.prepare("UPDATE settings SET value = '2' WHERE key = 'web_concurrency'").run();
+  db.prepare("DELETE FROM settings WHERE key = 'web_concurrency_auto_migrated'").run();
+  db.close();
+
+  db = openDb(dir);
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'web_concurrency'").get().value, "", "dokunulmamış 2 otomatik olur");
+  db.prepare("UPDATE settings SET value = '2' WHERE key = 'web_concurrency'").run();
+  db.close();
+
+  db = openDb(dir);
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'web_concurrency'").get().value, "2", "adminin yazdığı 2 kalır");
+  db.close();
+});
+
+test("eski chat mesajları konuşmaya taşınır: her soru-cevap kendi konuşması olur", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mtr-mig3-"));
+  let db = openDb(dir);
+  db.exec("DROP INDEX chat_messages_conversation");
+  db.exec("ALTER TABLE chat_messages DROP COLUMN conversation_id");
+  const add = db.prepare("INSERT INTO chat_messages (user_id, turn, role, text, created_at) VALUES (1, ?, ?, ?, '2026-01-01')");
+  add.run(1, "user", "ilk");
+  add.run(1, "assistant", "cevap");
+  add.run(3, "user", "ikinci");
+  add.run(3, "assistant", "cevap");
+  db.close();
+
+  db = openDb(dir);
+  assert.deepEqual(db.prepare("SELECT turn, conversation_id FROM chat_messages ORDER BY id").all().map((row) => [row.turn, row.conversation_id]), [[1, 1], [1, 1], [3, 3], [3, 3]]);
   db.close();
 });

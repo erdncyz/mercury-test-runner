@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MODEL_FAMILY_VALUES } from "@midscene/shared/env";
 import { setLogDirectoryResolver } from "@midscene/shared/logger";
 import { providerById } from "./providers.mjs";
+import { startScreenRecord, wakeScreen } from "./adb.mjs";
+import { createBrowserPool } from "./browser-pool.mjs";
 
 // Midscene appends every debug line — including values typed with aiInput, such as test-user
 // passwords — to MIDSCENE_RUN_DIR/log, unrotated. Point it at a directory that never exists so the
@@ -36,12 +40,34 @@ export function redactSecrets(text, secrets) {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Values accepted by MIDSCENE_MODEL_FAMILY in @midscene/shared (TModelFamily).
-export const MIDSCENE_FAMILIES = [
-  "doubao-vision", "doubao-seed", "gemini", "qwen2.5-vl", "qwen3-vl", "qwen3", "qwen3.5", "qwen3.6",
-  "vlm-ui-tars", "vlm-ui-tars-doubao", "vlm-ui-tars-doubao-1.5", "glm-v", "auto-glm", "auto-glm-multilingual",
-  "gpt-5", "gpt-6", "deepseek", "kimi", "kimi3", "xiaomi-mimo",
-];
+// Read from the installed Midscene so the list follows `npm run midscene:upgrade`.
+export const MIDSCENE_FAMILIES = [...MODEL_FAMILY_VALUES];
+
+// Which models each family covers, shown next to the family in the settings UI.
+const FAMILY_LABELS = {
+  "doubao-vision": "Doubao Vision (ByteDance)",
+  "doubao-seed": "Doubao Seed (ByteDance)",
+  gemini: "Gemini (Google)",
+  "qwen2.5-vl": "Qwen2.5-VL (Alibaba)",
+  "qwen3-vl": "Qwen3-VL (Alibaba)",
+  qwen3: "Qwen3 (Alibaba)",
+  "qwen3.5": "Qwen3.5 (Alibaba)",
+  "qwen3.6": "Qwen3.6 (Alibaba)",
+  "vlm-ui-tars": "UI-TARS",
+  "vlm-ui-tars-doubao": "UI-TARS · Doubao",
+  "vlm-ui-tars-doubao-1.5": "UI-TARS 1.5 · Doubao",
+  "glm-v": "GLM-V (Zhipu)",
+  "auto-glm": "AutoGLM (Zhipu)",
+  "auto-glm-multilingual": "AutoGLM çok dilli (Zhipu)",
+  "gpt-5": "GPT-5 (OpenAI)",
+  "gpt-6": "GPT-6 (OpenAI)",
+  deepseek: "DeepSeek",
+  kimi: "Kimi (Moonshot)",
+  kimi3: "Kimi 3 (Moonshot)",
+  "xiaomi-mimo": "MiMo (Xiaomi)",
+};
+
+export const MIDSCENE_FAMILY_OPTIONS = MIDSCENE_FAMILIES.map((id) => ({ id, label: FAMILY_LABELS[id] || id }));
 
 // Ordered from most to least specific; the first match wins.
 const FAMILY_RULES = [
@@ -67,9 +93,19 @@ const FAMILY_RULES = [
   [/mimo/i, "xiaomi-mimo"],
 ];
 
+// Specialised or text-only variants that share a family name but can't locate elements in a screenshot.
+const NOT_SCREEN_MODEL = /embed|rerank|(^|[-_/.])tts|whisper|audio|realtime|transcri|moderation|guard|distill|[-_/]coder|dall-?e|imagen|(^|[-_/])veo|lyria|-image(-|$)|search-preview/i;
+
 export function detectFamily(modelName) {
   const name = String(modelName || "");
-  return FAMILY_RULES.find(([pattern]) => pattern.test(name))?.[1] || "";
+  if (NOT_SCREEN_MODEL.test(name)) return "";
+  const family = FAMILY_RULES.find(([pattern]) => pattern.test(name))?.[1] || "";
+  return MIDSCENE_FAMILIES.includes(family) ? family : "";
+}
+
+// Tags each provider model with the Midscene family its id (or label) belongs to; "" = Midscene can't drive the screen with it.
+export function withMidsceneFamily(models) {
+  return models.map((model) => ({ ...model, midsceneFamily: detectFamily(model.id) || detectFamily(model.label) }));
 }
 
 function trimSlash(value) {
@@ -135,6 +171,189 @@ function shortError(error) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// What Midscene did for one step, from the executions it recorded meanwhile: AI calls (a call re-emitted while a
+// task progresses is counted once), tokens, model time, cache hits, device actions and the model's last remark.
+export function summarizeExecutions(executions, secrets = []) {
+  const seen = new Set();
+  const ai = { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, timeMs: 0, cacheHits: 0 };
+  const models = new Set();
+  const actions = [];
+  let note = "";
+  for (const execution of executions || []) {
+    for (const task of execution?.tasks || []) {
+      const usage = task.usage;
+      const id = usage && (usage.request_id || usage._midscene_call_id || task.taskId);
+      if (usage && !seen.has(id)) {
+        seen.add(id);
+        ai.calls += 1;
+        ai.promptTokens += Number(usage.prompt_tokens) || 0;
+        ai.completionTokens += Number(usage.completion_tokens) || 0;
+        ai.cachedTokens += Number(usage.cached_input) || 0;
+        ai.totalTokens += Number(usage.total_tokens) || 0;
+        ai.timeMs += Number(usage.time_cost) || 0;
+        const model = usage.response_model_name || usage.model_name;
+        if (model) models.add(String(model));
+      }
+      if (task.cache?.hit) ai.cacheHits += 1;
+      if (task.type === "Action Space" && task.subType && !["Sleep", "Error"].includes(task.subType)) actions.push(task.subType);
+      if ((task.type === "Planning" && task.subType === "Plan") || task.type === "Insight") {
+        const remark = task.output?.output || task.output?.log || task.thought || task.output?.thought;
+        if (typeof remark === "string" && remark.trim()) note = remark.trim();
+      }
+    }
+  }
+  const out = {};
+  if (ai.calls || ai.cacheHits) out.ai = { ...ai, models: [...models] };
+  if (actions.length) out.actions = actions;
+  if (note) out.note = redactSecrets(note.length > 400 ? `${note.slice(0, 399)}…` : note, secrets);
+  return out;
+}
+
+// Runs recorded before step metrics existed: rebuilds them from the case's saved Midscene report. Each step takes
+// the next executions whose name mentions it ("Tap - Giriş butonu", "Input - E-posta alanı", retries included).
+export function metricsFromReport(html, steps) {
+  const match = /<script type="midscene_web_dump"[^>]*data-group-id[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  let executions = [];
+  try { executions = JSON.parse(match?.[1]?.trim() || "{}").executions || []; } catch { return null; }
+  if (!executions.length) return null;
+  const fold = (value) => String(value || "").toLocaleLowerCase("tr").replace(/\s+/g, " ").trim();
+  let cursor = 0;
+  return steps.map((step) => {
+    if (step.action === "launch" || !["passed", "failed"].includes(step.status)) return null;
+    const needle = fold(step.args?.locate || String(step.text || "").split(" ← ")[0]).slice(0, 40);
+    const mine = [];
+    while (cursor < executions.length && needle && fold(executions[cursor].name).includes(needle)) mine.push(executions[cursor++]);
+    if (!mine.length) return null;
+    const times = mine.flatMap((execution) => (execution.tasks || []).flatMap((task) => [task.timing?.start, task.timing?.end])).filter(Number.isFinite);
+    return { ...(times.length ? { durationMs: Math.max(...times) - Math.min(...times) } : {}), ...summarizeExecutions(mine) };
+  });
+}
+
+// Unlike a bare Promise.race, clears its timer so a finished step leaves nothing pending.
+function withTimeout(promise, ms, message = "zaman aşımı") {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(message), { timeout: true })), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+// Mistakes in the step itself (bad argument, unsupported on this platform): retrying cannot help.
+function stepError(message) {
+  return Object.assign(new Error(message), { fatal: true });
+}
+
+export const STEP_TIMEOUT_MS = Number(process.env.MERCURY_STEP_TIMEOUT_MS) || 180_000;
+export const STEP_RETRIES = process.env.MERCURY_STEP_RETRIES === undefined ? 1 : Math.max(0, Math.trunc(Number(process.env.MERCURY_STEP_RETRIES)) || 0);
+
+// How long one step may take before it fails: waits and sleeps get their own length on top.
+export function stepTimeoutMs(step, base = STEP_TIMEOUT_MS) {
+  const args = step.args || {};
+  if (optionalNumber(args.stepTimeout)) return Number(args.stepTimeout);
+  if (step.action === "aiWaitFor") return Math.max(base, (Number(args.timeout) || 30_000) + 30_000);
+  if (step.action === "sleep") return (Number(args.ms ?? step.text) || 1000) + 5_000;
+  return base;
+}
+
+const READ_ONLY = new Set(["aiAssert", "aiBoolean", "aiNumber", "aiString", "aiQuery"]);
+const LOCATING = new Set(["aiTap", "aiInput", "aiHover", "aiDoubleClick", "aiRightClick", "aiLongPress", "aiClearInput", "aiScroll", "aiKeyboardPress", "aiPinch"]);
+const NOT_FOUND = /element not found|cannot find|could not find|not (?:be )?(?:found|visible)|unable to locate|failed to locate|no element/i;
+const MODEL_REFUSED = /\b40[13]\b|invalid api key|unauthori[sz]ed|forbidden|quota|insufficient_quota|Değişken çözülemedi/i;
+
+// A retry is only safe when the first attempt changed nothing: reads and checks, or an action whose element
+// was not found. `aiAct` (several actions), waits, launches and timed-out steps (may still be acting) never retry.
+export function shouldRetry(step, error) {
+  if (error?.timeout || error?.fatal) return false;
+  const message = String(error?.message || error);
+  if (MODEL_REFUSED.test(message)) return false;
+  if (READ_ONLY.has(step.action)) return true;
+  return LOCATING.has(step.action) && NOT_FOUND.test(message);
+}
+
+// Mobile screenshots arrive as large PNG data URLs; a JPEG keeps step thumbnails light. Falls back to the original.
+export async function screenshotFromDataUrl(dataUrl) {
+  const match = /^data:image\/(png|jpe?g|webp);base64,(.+)$/is.exec(String(dataUrl || ""));
+  if (!match) return null;
+  const data = Buffer.from(match[2], "base64");
+  try {
+    const { convertImgBufferToJpeg } = await import("@midscene/shared/img");
+    return { data: await convertImgBufferToJpeg(data, 70), ext: "jpg" };
+  } catch {
+    return { data, ext: match[1].toLowerCase() === "png" ? "png" : "jpg" };
+  }
+}
+
+const SCROLL_TYPES = new Set(["once", "singleAction", "scrollToBottom", "scrollToTop", "scrollToRight", "scrollToLeft", "untilBottom", "untilTop", "untilRight", "untilLeft"]);
+const DIRECTIONS = new Set(["down", "up", "left", "right"]);
+export const READ_ACTIONS = new Set(["aiBoolean", "aiNumber", "aiString", "aiQuery"]);
+
+// The line shown for a step whose meaning lives in its arguments; null keeps the step's own text.
+export function stepLabel(action, args = {}) {
+  const filled = (value) => value !== undefined && value !== null && value !== "";
+  if (action === "aiInput" && filled(args.locate)) return `${args.locate} ← ${args.value ?? ""}`;
+  if (action === "aiScroll") {
+    const kind = filled(args.scrollType) && args.scrollType !== "singleAction" ? ` · ${args.scrollType}` : "";
+    return `${args.locate || "Ekran"} · ${args.direction || "down"}${kind}${filled(args.distance) ? ` · ${args.distance}px` : ""}`;
+  }
+  if (action === "aiKeyboardPress" && filled(args.keyName)) return `${args.keyName}${filled(args.locate) ? ` · ${args.locate}` : ""}`;
+  if (action === "aiPinch") return `${args.locate || "Ekran"} · ${args.direction || "out"}`;
+  if (READ_ACTIONS.has(action) && filled(args.prompt)) {
+    return `${args.prompt}${filled(args.expect) ? ` = ${args.expect}` : ""}${filled(args.name) ? ` → ${args.name}` : ""}`;
+  }
+  return null;
+}
+
+function hasArgs(step) {
+  return Boolean(step.args && Object.keys(step.args).length);
+}
+
+// Reads the step's own argument, or falls back to its text for the short YAML form (`- aiKeyboardPress: Enter`).
+function argOrText(step, name, vars) {
+  const value = hasArgs(step) ? step.args[name] : step.text;
+  return value === undefined || value === null || value === "" ? undefined : resolveText(value, vars);
+}
+
+function optionalNumber(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw stepError(`Sayı bekleniyordu: ${value}`);
+  return number;
+}
+
+function sameValue(actual, expected, type) {
+  if (type === "number") {
+    const number = Number(String(expected).replace(",", "."));
+    return Number.isFinite(number) && Math.abs(Number(actual) - number) < 1e-9;
+  }
+  if (type === "boolean") return String(actual) === String(/^(true|evet|yes|1|doğru|dogru)$/i.test(String(expected).trim()));
+  return String(actual ?? "").trim().toLocaleLowerCase("tr") === String(expected ?? "").trim().toLocaleLowerCase("tr");
+}
+
+// aiBoolean/aiNumber/aiString/aiQuery read a value off the screen. `name` keeps it for later steps as {{saved.name}};
+// `expect` turns the read into a check, so a step can compare two screens ("sepet tutarı = {{saved.fiyat}}").
+async function readValue(session, step, vars, method, type) {
+  const args = step.args || {};
+  const prompt = resolveText(hasArgs(step) ? args.prompt ?? step.text : step.text, vars);
+  if (typeof session.agent[method] !== "function") throw stepError(`${method} bu platformda desteklenmiyor`);
+  const value = await session.agent[method](prompt);
+  if (args.name) vars.saved[String(args.name)] = value;
+  const shown = typeof value === "string" ? value : JSON.stringify(value);
+  if (args.expect !== undefined && args.expect !== "") {
+    const expected = resolveText(args.expect, vars);
+    if (!sameValue(value, expected, type)) {
+      const error = new Error(`Beklenen "${expected}", ekranda okunan "${String(shown).slice(0, 200)}"`);
+      error.readOnly = true;
+      throw error;
+    }
+  }
+  return `${args.name ? `${args.name} = ` : ""}${String(shown).slice(0, 500)}`;
+}
+
+function call(agent, method) {
+  if (typeof agent[method] !== "function") throw stepError(`${method} bu platformda desteklenmiyor`);
+  return agent[method].bind(agent);
+}
+
 // `session` hides the platform: web opens URLs with Playwright, mobile launches the app on the farm device.
 async function runStep(session, step, vars) {
   const { agent } = session;
@@ -148,14 +367,18 @@ async function runStep(session, step, vars) {
       } catch (error) {
         const code = /net::(ERR_[A-Z_]+)/.exec(error.message)?.[1] || (/Timeout/i.test(error.message) ? "zaman aşımı" : "");
         if (!code) throw error;
-        throw new Error(`Açılış adresine ulaşılamadı (${code}): ${target}`);
+        throw stepError(`Açılış adresine ulaşılamadı (${code}): ${target}`);
       }
       return "";
     }
     case "aiAct":
     case "aiAction":
-    case "ai":
-      return (await agent.aiAct(text())) || "";
+    case "ai": {
+      const prompt = text();
+      const secret = vars?.account?.password;
+      // The plan cache stores its prompt unmasked in MIDSCENE_RUN_DIR/cache, so a prompt carrying the password is never cached.
+      return (await (secret && prompt.includes(secret) ? agent.aiAct(prompt, { cacheable: false }) : agent.aiAct(prompt))) || "";
+    }
     case "aiAssert":
       await agent.aiAssert(text());
       return "";
@@ -166,37 +389,93 @@ async function runStep(session, step, vars) {
       await agent.aiTap(text());
       return "";
     case "aiHover":
-      if (typeof agent.aiHover !== "function") throw new Error("aiHover bu platformda desteklenmiyor");
+      if (typeof agent.aiHover !== "function") throw stepError("aiHover bu platformda desteklenmiyor");
       await agent.aiHover(text());
       return "";
     case "aiInput":
       await agent.aiInput(resolveText(args.locate || step.text, vars), { value: resolveText(args.value ?? "", vars) });
       return "";
     case "aiQuery":
+      if (hasArgs(step) && (args.name || args.expect !== undefined)) return readValue(session, step, vars, "aiQuery", "string");
       return JSON.stringify(await agent.aiQuery(text())).slice(0, 500);
+    case "aiBoolean":
+      return readValue(session, step, vars, "aiBoolean", "boolean");
+    case "aiNumber":
+      return readValue(session, step, vars, "aiNumber", "number");
+    case "aiString":
+      return readValue(session, step, vars, "aiString", "string");
+    case "aiScroll": {
+      // No target scrolls the whole screen; `scrollType: untilBottom` keeps going until the end of the page/list.
+      const locate = hasArgs(step) ? (args.locate ? resolveText(args.locate, vars) : undefined) : step.text ? text() : undefined;
+      const direction = String(args.direction || "down").toLowerCase();
+      const scrollType = String(args.scrollType || "singleAction");
+      if (!DIRECTIONS.has(direction)) throw stepError(`Geçersiz kaydırma yönü: ${direction}`);
+      if (!SCROLL_TYPES.has(scrollType)) throw stepError(`Geçersiz kaydırma türü: ${scrollType}`);
+      await call(agent, "aiScroll")(locate, { direction, scrollType, distance: optionalNumber(args.distance) ?? null });
+      return "";
+    }
+    case "aiKeyboardPress": {
+      const keyName = argOrText(step, "keyName", vars);
+      if (!keyName) throw stepError("aiKeyboardPress için tuş adı (keyName) gerekli, örn. Enter");
+      await call(agent, "aiKeyboardPress")(args.locate ? resolveText(args.locate, vars) : undefined, { keyName });
+      return "";
+    }
+    case "aiDoubleClick":
+    case "aiRightClick":
+    case "aiClearInput":
+      await call(agent, step.action)(resolveText(args.locate ?? step.text, vars));
+      return "";
+    case "aiLongPress":
+      await call(agent, "aiLongPress")(resolveText(args.locate ?? step.text, vars), { duration: optionalNumber(args.duration) });
+      return "";
+    case "aiPinch": {
+      const direction = String(args.direction || "out").toLowerCase();
+      if (direction !== "in" && direction !== "out") throw stepError(`aiPinch yönü in veya out olmalı: ${direction}`);
+      const locate = args.locate ? resolveText(args.locate, vars) : hasArgs(step) ? undefined : step.text ? text() : undefined;
+      await call(agent, "aiPinch")(locate, { direction, distance: optionalNumber(args.distance), duration: optionalNumber(args.duration) });
+      return "";
+    }
     case "back":
     case "home":
-      if (typeof agent[step.action] !== "function") throw new Error(`${step.action} bu platformda desteklenmiyor`);
+      if (typeof agent[step.action] !== "function") throw stepError(`${step.action} bu platformda desteklenmiyor`);
       await agent[step.action]();
       return "";
     case "sleep":
       await wait(Number(args.ms ?? step.text) || 1000);
       return "";
     default:
-      throw new Error(`Desteklenmeyen adım: ${step.action}`);
+      throw stepError(`Desteklenmeyen adım: ${step.action}`);
   }
 }
 
-// Runs the cases one after another; `openCase` returns { agent, launch, close } for one case.
-// `onProgress(caseIndex, steps)` fires on every step state change so the UI can follow along.
-export async function executeCases({ runId, cases, vars, model, reportDir, onProgress, openCase }) {
+// Runs the cases one after another; `openCase` returns { agent, launch, screenshot?, close? } for one case.
+// `onProgress(caseIndex, steps, files)` fires on every step state change so the UI can follow along: each finished
+// step carries its screenshot (`step.shot`) and `files.report` points at the Midscene report as it stands so far.
+// Each step gets `stepTimeout` ms (see `stepTimeoutMs`) and up to `retries` safe retries (see `shouldRetry`).
+// `item.context` (notes from the QA skills) becomes Midscene's agent-level AI context for that case.
+// Midscene's cache: a case run again replays its earlier aiAct plans and (web only) XPath-checked element locations
+// instead of asking the model; a stale entry falls back to the model. One file per case, platform and launch URL,
+// under MIDSCENE_RUN_DIR/cache. MERCURY_MIDSCENE_CACHE=0 turns it off.
+export function caseCacheId(platform, item, launchUrl) {
+  if (!platform || process.env.MERCURY_MIDSCENE_CACHE === "0") return "";
+  const identity = [platform, item.path || "", item.caseId || "", item.path ? "" : item.title || "", launchUrl || ""].join("\n");
+  return `${platform}-${createHash("sha1").update(identity).digest("hex").slice(0, 16)}`;
+}
+
+export async function executeCases({
+  runId, cases, vars, model, reportDir, onProgress, openCase, platform = "",
+  stepTimeout = STEP_TIMEOUT_MS, retries = STEP_RETRIES, retryDelayMs = 1500,
+}) {
   mkdirSync(reportDir, { recursive: true });
   const secrets = [vars?.account?.password].filter(Boolean);
   const results = [];
   for (const [index, item] of cases.entries()) {
-    const key = String(item.caseId || index + 1).replace(/[^\w-]/g, "_");
+    // Cases without a TestRail id use the worker's unique `fileKey` so parallel lanes never share file names.
+    const key = String(item.caseId || item.fileKey || index + 1).replace(/[^\w-]/g, "_");
     const steps = item.steps.map((step) => ({ ...step, status: "pending", detail: "" }));
     const files = {};
+    const progress = () => onProgress?.(index, steps, { ...files });
+    const cacheId = caseCacheId(platform, item, vars?.launchUrl);
     let session;
     try {
       session = await openCase({
@@ -208,33 +487,89 @@ export async function executeCases({ runId, cases, vars, model, reportDir, onPro
           groupName: `Mercury #${runId}`,
           groupDescription: item.title,
           autoPrintReportMsg: false,
+          ...(item.context ? { aiContexts: { default: item.context } } : {}),
+          ...(cacheId ? { cache: { id: cacheId } } : {}),
         },
       });
     } catch (error) {
       const detail = `Cihaz oturumu açılamadı: ${shortError(error)}`;
       for (const step of steps) Object.assign(step, { status: "not_run", detail });
       results.push({ status: "failed", message: detail, steps, files });
-      onProgress?.(index, steps);
+      progress();
       continue;
     }
+    // Both helpers are best effort: a missing screenshot or report copy never changes a step's result.
+    const shoot = async (step, position) => {
+      if (!session.screenshot) return;
+      try {
+        const shot = await withTimeout(session.screenshot(), 15_000);
+        if (!shot?.data?.length) return;
+        const name = `shot-${key}-${position + 1}.${shot.ext}`;
+        writeFileSync(join(reportDir, name), shot.data);
+        step.shot = name;
+      } catch { /* the step keeps its result without a picture */ }
+    };
+    // Midscene flushes its report after every action, so the file is a complete, viewable report at step boundaries.
+    const publishReport = () => {
+      const source = session.agent.reportFile;
+      if (!source || !existsSync(source)) return;
+      try {
+        const name = `midscene-${key}.html`;
+        const temporary = join(reportDir, `.${name}.tmp`);
+        writeFileSync(temporary, redactSecrets(readFileSync(source, "utf8"), secrets));
+        renameSync(temporary, join(reportDir, name));
+        files.report = name;
+      } catch { /* the final copy after the case still happens */ }
+    };
     let failed = false;
-    for (const step of steps) {
+    // Values read with `name` ({{saved.x}}) belong to this case only.
+    const caseVars = { ...vars, saved: {} };
+    for (const [position, step] of steps.entries()) {
       if (failed) {
         step.status = "skipped";
         step.detail = "Önceki adım başarısız olduğu için atlandı";
         continue;
       }
       step.status = "running";
-      onProgress?.(index, steps);
-      try {
-        step.detail = await runStep(session, step, vars);
-        step.status = "passed";
-      } catch (error) {
-        step.status = "failed";
-        step.detail = shortError(error);
-        failed = true;
+      progress();
+      if (session.beforeStep) {
+        try { await withTimeout(session.beforeStep(), 10_000); } catch { /* the step itself reports what is wrong */ }
       }
-      onProgress?.(index, steps);
+      const startedAt = Date.now();
+      const executionsBefore = session.agent.dump?.executions?.length ?? 0;
+      const allowed = step.args?.retry !== undefined && step.args.retry !== "" ? Math.max(0, Math.trunc(Number(step.args.retry)) || 0) : retries;
+      const limit = stepTimeoutMs(step, stepTimeout);
+      let firstError = null;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          const detail = await withTimeout(runStep(session, step, caseVars), limit, `Adım ${Math.round(limit / 1000)} sn içinde bitmedi (zaman aşımı)`);
+          step.status = "passed";
+          step.detail = firstError ? `${attempt}. denemede geçti · ilk deneme: ${shortError(firstError)}${detail ? ` · ${detail}` : ""}` : detail;
+          break;
+        } catch (error) {
+          if (attempt <= allowed && shouldRetry(step, error)) {
+            firstError ||= error;
+            step.attempts = attempt + 1;
+            step.detail = `Yeniden deneniyor: ${shortError(error)}`;
+            progress();
+            await wait(retryDelayMs);
+            continue;
+          }
+          step.status = "failed";
+          step.detail = firstError ? `${attempt} denemede de başarısız: ${shortError(error)}` : shortError(error);
+          failed = true;
+          break;
+        }
+      }
+      // Metrics are best effort as well: timing is ours, the rest comes from Midscene's dump and the page.
+      step.metrics = { durationMs: Date.now() - startedAt };
+      try { Object.assign(step.metrics, summarizeExecutions(session.agent.dump?.executions?.slice(executionsBefore), secrets)); } catch { /* no dump */ }
+      if (session.pageInfo) {
+        try { Object.assign(step.metrics, await withTimeout(session.pageInfo(step.action === "launch"), 5_000)); } catch { /* page busy or gone */ }
+      }
+      await shoot(step, position);
+      publishReport();
+      progress();
     }
     try { await session.agent.destroy(); } catch { /* report is still written on a best-effort basis */ }
     const reportFile = session.agent.reportFile;
@@ -252,12 +587,20 @@ export async function executeCases({ runId, cases, vars, model, reportDir, onPro
       steps,
       files,
     });
-    onProgress?.(index, steps);
+    progress();
   }
   return { results };
 }
 
-export async function runWebCases({ runId, cases, vars, model, reportDir, onProgress }) {
+let sharedBrowsers = null;
+
+// All web lanes of all runs on this server draw from one pool (see src/browser-pool.mjs).
+export function webBrowserPool(chromium) {
+  sharedBrowsers ||= createBrowserPool({ launch: () => chromium.launch({ headless: process.env.MERCURY_HEADLESS !== "0" }) });
+  return sharedBrowsers;
+}
+
+export async function runWebCases({ runId, cases, vars, model, reportDir, onProgress, pool }) {
   let chromium;
   let PlaywrightAgent;
   try {
@@ -271,12 +614,28 @@ export async function runWebCases({ runId, cases, vars, model, reportDir, onProg
   mkdirSync(reportDir, { recursive: true });
   // Parallel lanes share the report dir; each call records into its own scratch folder.
   const videoDir = mkdtempSync(join(reportDir, ".video-"));
-  const browser = await chromium.launch({ headless: process.env.MERCURY_HEADLESS !== "0" });
+  const browsers = pool || webBrowserPool(chromium);
+  const contexts = new Set();
+  let lease;
+  try {
+    lease = await browsers.acquire();
+  } catch (error) {
+    rmSync(videoDir, { recursive: true, force: true });
+    throw error;
+  }
   try {
     return await executeCases({
-      runId, cases, vars, model, reportDir, onProgress,
+      runId, cases, vars, model, reportDir, onProgress, platform: "web",
       openCase: async ({ key, agentOptions }) => {
+        // A crashed shared browser only fails the case that was on it; the lane's next case gets a fresh one.
+        if (!lease.browser.isConnected()) {
+          lease.release();
+          lease = await browsers.acquire();
+        }
+        const { browser } = lease;
         const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: videoDir } });
+        // The browser outlives this lane, so a context left open by an unexpected error must still be closed here.
+        contexts.add(context);
         const page = await context.newPage();
         const agent = new PlaywrightAgent(page, agentOptions);
         // The agent injects a <select> rendering style without awaiting it; navigating right away destroys
@@ -285,9 +644,35 @@ export async function runWebCases({ runId, cases, vars, model, reportDir, onProg
         return {
           agent,
           launch: (url) => page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 }),
+          // Address after every step; after opening, also how fast the page loaded (Navigation Timing) and the browser.
+          pageInfo: async (opened) => {
+            const info = { url: page.url() };
+            if (!opened) return info;
+            const load = await page.evaluate(() => {
+              const nav = performance.getEntriesByType("navigation")[0];
+              if (!nav) return null;
+              const ms = (value) => (value > 0 ? Math.round(value) : null);
+              const resources = performance.getEntriesByType("resource");
+              return {
+                status: nav.responseStatus || null,
+                protocol: nav.nextHopProtocol || "",
+                dnsMs: ms(nav.domainLookupEnd - nav.domainLookupStart),
+                connectMs: ms(nav.connectEnd - nav.connectStart),
+                ttfbMs: ms(nav.responseStart),
+                fcpMs: ms(performance.getEntriesByName("first-contentful-paint")[0]?.startTime),
+                domContentLoadedMs: ms(nav.domContentLoadedEventEnd),
+                loadMs: ms(nav.loadEventEnd),
+                requests: resources.length + 1,
+                transferBytes: Math.round((nav.transferSize || 0) + resources.reduce((sum, entry) => sum + (entry.transferSize || 0), 0)),
+              };
+            }).catch(() => null);
+            return { ...info, title: await page.title().catch(() => ""), ...(load ? { load } : {}), env: { browser: `Chromium ${browser.version()}`, viewport: "1280×800" } };
+          },
+          screenshot: async () => ({ data: await page.screenshot({ type: "jpeg", quality: 70, timeout: 10_000 }), ext: "jpg" }),
           close: async () => {
             const video = page.video();
             await context.close();
+            contexts.delete(context);
             const source = await video?.path();
             if (!source || !existsSync(source)) return {};
             renameSync(source, join(reportDir, `video-${key}.webm`));
@@ -297,14 +682,20 @@ export async function runWebCases({ runId, cases, vars, model, reportDir, onProg
       },
     });
   } finally {
-    await browser.close().catch(() => {});
+    await Promise.all([...contexts].map((context) => context.close().catch(() => {})));
+    lease.release();
     rmSync(videoDir, { recursive: true, force: true });
   }
 }
 
+export const BLACK_SCREEN_HINT = "If the screenshot is completely black or dark, the device screen is asleep or dimmed, not empty: "
+  + "tap the center of the screen once, look again, and only then continue with the task. Never report failure just because the screen is black.";
+
 // Drives a farm device. Android: `connection.serial` is the `adb connect` target that is already
 // attached to this server's ADB. iOS: `connection.host/port` is the device's WebDriverAgent.
-export async function runMobileCases({ platform, connection, appId, adbPath, runId, cases, vars, model, reportDir, onProgress, sdk }) {
+// Android cases are also screen-recorded through `recordScreen` (tests pass a fake); iOS has no recorder.
+// Android screens are woken through `wake` when a case opens and before every step (see `wakeScreen`).
+export async function runMobileCases({ platform, connection, appId, adbPath, runId, cases, vars, model, reportDir, onProgress, sdk, recordScreen = startScreenRecord, wake = wakeScreen }) {
   let midscene = sdk;
   try {
     midscene ||= platform === "android" ? await import("@midscene/android") : await import("@midscene/ios");
@@ -312,8 +703,11 @@ export async function runMobileCases({ platform, connection, appId, adbPath, run
     return { setupError: `Midscene ${platform} paketi kurulu değil (${shortError(error)}). Sunucuda \`npm run setup\` çalıştır.` };
   }
   return executeCases({
-    runId, cases, vars, model, reportDir, onProgress,
-    openCase: async ({ item, agentOptions }) => {
+    runId, cases, vars, model, reportDir, onProgress, platform,
+    openCase: async ({ key, item, agentOptions }) => {
+      // A dark screenshot otherwise reads as "nothing to act on" and the AI gives up instead of waking the device.
+      const aiContexts = { ...agentOptions.aiContexts, default: [BLACK_SCREEN_HINT, agentOptions.aiContexts?.default].filter(Boolean).join("\n\n") };
+      agentOptions = { ...agentOptions, aiContexts };
       let agent;
       if (platform === "android") {
         const device = new midscene.AndroidDevice(connection.serial, { androidAdbPath: adbPath || undefined, autoDismissKeyboard: true });
@@ -324,12 +718,31 @@ export async function runMobileCases({ platform, connection, appId, adbPath, run
         await device.connect();
         agent = new midscene.IOSAgent(device, agentOptions);
       }
+      let recorder = null;
+      if (platform === "android" && adbPath && connection.serial && recordScreen) {
+        try {
+          recorder = recordScreen({ adbPath, serial: connection.serial, name: `${runId}-${key}` });
+        } catch { recorder = null; }
+      }
+      const wakeDevice = platform === "android" && adbPath && connection.serial && wake
+        ? () => wake({ adbPath, serial: connection.serial }).catch(() => {})
+        : null;
+      await wakeDevice?.();
       // Each case starts from a cold app so a previous case's screen cannot leak into it.
       if (appId) {
         await agent.terminate(appId).catch(() => {});
         if (!item.steps.some((step) => step.action === "launch")) await agent.launch(appId);
       }
-      return { agent, launch: (target) => agent.launch(target) };
+      return {
+        agent,
+        launch: (target) => agent.launch(target),
+        ...(wakeDevice ? { beforeStep: wakeDevice } : {}),
+        screenshot: async () => screenshotFromDataUrl(await agent.page.screenshotBase64()),
+        close: async () => {
+          const videos = recorder ? await recorder.stop(reportDir, key) : [];
+          return videos.length ? { video: videos[0], videos } : {};
+        },
+      };
     },
   });
 }

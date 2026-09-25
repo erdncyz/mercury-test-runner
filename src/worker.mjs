@@ -3,37 +3,58 @@ import { join } from "node:path";
 import { adbConnect, adbDisconnect, resolveAdb } from "./adb.mjs";
 import { NoFreeDeviceError, deviceLabel, installApp, parseWdaUrl, releaseDevice, reportScenarios, reserveDevices, useDevice } from "./farm.mjs";
 import { addResults } from "./integrations.mjs";
-import { midsceneModel, midsceneVersion, runMobileCases, runWebCases } from "./midscene.mjs";
-import { laneCount, objectValue, selectCases, serialList, shardCases } from "./planning.mjs";
+import { midsceneModel, midsceneVersion, runMobileCases, runWebCases, stepLabel } from "./midscene.mjs";
+import { fairLaneGrants, laneCount, objectValue, scopeCases, selectCases, serialList, shardCases, webLimit } from "./planning.mjs";
+import { caseSkillText, loadSkills, midsceneContext, selectSkills } from "./skills.mjs";
+
+// A chat scenario holds one or more cases; rows written before multi-case scenarios have only title/steps.
+export function scenarioCases(scenario) {
+  return scenario?.cases?.length ? scenario.cases : [{ title: scenario?.title || "", steps: scenario?.steps || [] }];
+}
 
 function unquote(value) {
   const text = String(value || "").trim();
   return /^(["']).*\1$/.test(text) ? text.slice(1, -1) : text;
 }
 
+// The inline value of a step that also has nested arguments (`- aiNumber: "Sepet tutarı"` + `name: tutar`) is the
+// argument that step would otherwise lack, so the shown label never becomes the text sent to Midscene.
+const INLINE_ARG = { aiBoolean: "prompt", aiNumber: "prompt", aiString: "prompt", aiQuery: "prompt", aiKeyboardPress: "keyName", aiScroll: "locate", aiPinch: "locate" };
+
 // Minimal reader for the `steps:` lists in case YAML (no YAML dependency in this project).
 export function parseSteps(text) {
   const steps = [];
   let stepsIndent = -1;
   let current = null;
+  let inline = "";
+  const finish = () => {
+    if (!current?.args || !INLINE_ARG[current.action]) return;
+    const name = INLINE_ARG[current.action];
+    if (inline && current.args[name] === undefined) current.args = { [name]: inline, ...current.args };
+    current.text = stepLabel(current.action, current.args) ?? current.text;
+  };
   for (const line of String(text || "").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const indent = line.length - line.trimStart().length;
     if (trimmed === "steps:") {
+      finish();
       stepsIndent = indent;
       current = null;
       continue;
     }
     if (stepsIndent < 0) continue;
     if (indent <= stepsIndent) {
+      finish();
       stepsIndent = -1;
       current = null;
       continue;
     }
     const item = trimmed.match(/^-\s*([A-Za-z]\w*):\s*(.*)$/);
     if (item) {
+      finish();
       current = { action: item[1], text: unquote(item[2]) };
+      inline = current.text;
       steps.push(current);
       continue;
     }
@@ -45,6 +66,7 @@ export function parseSteps(text) {
       else if (!current.text) current.text = unquote(nested[2]);
     }
   }
+  finish();
   return steps;
 }
 
@@ -83,11 +105,8 @@ const STEP_LABEL = { passed: "geçti", failed: "başarısız", skipped: "atland�
 
 function reportHtml({ run, cases, note, midscene }) {
   const blocks = cases.map((item) => {
-    const steps = (item.steps || []).map((step) => `<li class="${escapeHtml(step.status)}"><code>${escapeHtml(step.action)}</code> ${escapeHtml(step.text)} <em>${escapeHtml(STEP_LABEL[step.status] || step.status)}</em>${step.detail && step.status === "failed" ? `<div class="err">${escapeHtml(step.detail)}</div>` : ""}</li>`).join("");
-    const links = [
-      item.files?.report ? `<a href="${escapeHtml(item.files.report)}">Midscene raporu</a>` : "",
-      item.files?.video ? `<a href="${escapeHtml(item.files.video)}">Video (webm)</a>` : "",
-    ].filter(Boolean).join(" · ");
+    const steps = (item.steps || []).map((step) => `<li class="${escapeHtml(step.status)}"><code>${escapeHtml(step.action)}</code> ${escapeHtml(step.text)} <em>${escapeHtml(STEP_LABEL[step.status] || step.status)}</em>${step.shot ? ` <a href="${escapeHtml(step.shot)}">ekran</a>` : ""}${step.detail && step.status === "failed" ? `<div class="err">${escapeHtml(step.detail)}</div>` : ""}</li>`).join("");
+    const links = item.files?.report ? `<a href="${escapeHtml(item.files.report)}">Midscene raporu</a>` : "";
     const title = item.caseId ? String(item.title).replace(new RegExp(`^C?${item.caseId}\\b[\\s:.\\-–—]*`, "i"), "") || item.title : item.title;
     return `<section><h2><code>${escapeHtml(item.caseId ? `C${item.caseId}` : "—")}</code> ${escapeHtml(title)} <em>${escapeHtml(item.status)}</em></h2>${links ? `<p>${links}</p>` : ""}<ol>${steps}</ol></section>`;
   }).join("");
@@ -95,12 +114,12 @@ function reportHtml({ run, cases, note, midscene }) {
   <style>body{font-family:sans-serif;background:#0b1120;color:#f8fafc;padding:32px;max-width:960px;margin:auto}a{color:#22c55e}code{color:#94a3b8}
   section{border:1px solid #334155;border-radius:12px;padding:8px 20px;margin:16px 0}li{margin:6px 0}.passed em{color:#22c55e}.failed em,.err{color:#f87171}.skipped em,.not_run em{color:#94a3b8}.err{font-size:13px;margin-top:4px}</style>
   <body><h1>Mercury Test Runner · #${run.id}</h1>
-  <p>${escapeHtml(run.client_name)} · ${escapeHtml(run.config_name)}${midscene ? ` · Midscene ${escapeHtml(midscene)}` : ""}</p>
+  <p>${run.scenario_json ? `${escapeHtml(run.config_name)} · ${escapeHtml(run.client_name)}` : `${escapeHtml(run.client_name)} · ${escapeHtml(run.config_name)}`}${midscene ? ` · Midscene ${escapeHtml(midscene)}` : ""}</p>
   <p>${escapeHtml(note)}</p>${blocks}</body></html>`;
 }
 
 // Only browsers are capped by this machine; phones are limited by the farm's free devices and each UDID pool.
-const LIMIT_SETTING = { web: "web_concurrency" };
+const LIMITS = { web: webLimit };
 const DEVICE_RETRY_MS = 30_000;
 const MOBILE = new Set(["android", "ios"]);
 
@@ -110,7 +129,8 @@ function scenarioStatus(status) {
 
 // `accounts` is the account store (src/accounts.mjs); `drivers` lets tests replace the farm, ADB,
 // account and Midscene runners with fakes.
-export function createWorker({ db, settings, reportsDir, casesDir, accounts: accountStore = {}, drivers = {} }) {
+// `skillsDirs` (built-in, then custom) give each case the "## Midscene" notes of the QA skills that fit it.
+export function createWorker({ db, settings, reportsDir, casesDir, skillsDirs = [], accounts: accountStore = {}, drivers = {} }) {
   const farm = { reserveDevices, useDevice, installApp, releaseDevice, reportScenarios, ...drivers.farm };
   const adb = { resolveAdb, adbConnect, adbDisconnect, ...drivers.adb };
   const accounts = { ...accountStore, ...drivers.accounts };
@@ -135,22 +155,30 @@ export function createWorker({ db, settings, reportsDir, casesDir, accounts: acc
     try {
       const current = settings();
       const running = {};
-      for (const row of db.prepare("SELECT platform, SUM(lanes) AS n FROM runs WHERE status = 'running' GROUP BY platform").all()) {
-        running[row.platform] = row.n || 0;
+      const usage = {};
+      for (const row of db.prepare("SELECT platform, started_by, SUM(lanes) AS n FROM runs WHERE status = 'running' GROUP BY platform, started_by").all()) {
+        running[row.platform] = (running[row.platform] || 0) + (row.n || 0);
+        (usage[row.platform] ||= new Map()).set(row.started_by ?? 0, row.n || 0);
       }
       const due = db.prepare("SELECT * FROM runs WHERE status = 'queued' AND (retry_at IS NULL OR retry_at <= ?) ORDER BY id ASC")
         .all(new Date().toISOString());
+      // A chat scenario runs its cases one after another, so it always takes one browser or device.
+      const wanted = (run) => (run.scenario_json ? 1 : laneCount(configById.get(run.config_id) || {}));
+      const grants = new Map();
+      for (const run of due) if (!LIMITS[run.platform]) grants.set(run.id, wanted(run));
+      // Capped platforms share their free lanes fairly between the users waiting for them.
+      for (const [platform, limitOf] of Object.entries(LIMITS)) {
+        const waiting = due.filter((run) => run.platform === platform).map((run) => ({ id: run.id, user: run.started_by ?? 0, lanes: wanted(run) }));
+        if (!waiting.length) continue;
+        const free = limitOf(current) - (running[platform] || 0);
+        for (const [id, lanes] of fairLaneGrants(waiting, free, usage[platform])) grants.set(id, lanes);
+      }
       for (const run of due) {
-        const lanes = laneCount(configById.get(run.config_id) || {});
-        const limitKey = LIMIT_SETTING[run.platform];
-        const limit = Math.max(1, Number(current[limitKey]) || 2);
-        const busy = running[run.platform] || 0;
-        // A run wider than the platform limit still starts once the platform is idle instead of waiting forever.
-        if (limitKey && busy > 0 && busy + lanes > limit) continue;
-        running[run.platform] = busy + lanes;
+        const lanes = grants.get(run.id);
+        if (!lanes) continue;
         db.prepare("UPDATE runs SET status = 'running', retry_at = NULL, lanes = ?, started_at = ? WHERE id = ?")
           .run(lanes, new Date().toISOString(), run.id);
-        const job = execute(run)
+        const job = execute(run, lanes)
           .catch((error) => {
             db.prepare("UPDATE runs SET status = 'failed', message = ?, finished_at = ? WHERE id = ? AND status = 'running'")
               .run(`Beklenmeyen hata: ${error.message}`, new Date().toISOString(), run.id);
@@ -200,13 +228,28 @@ export function createWorker({ db, settings, reportsDir, casesDir, accounts: acc
     return task;
   }
 
-  async function execute(run) {
+  // `maxLanes` is what the scheduler granted: a run may get fewer lanes than configured while others wait.
+  async function execute(run, maxLanes = Infinity) {
     const current = settings();
     const config = configById.get(run.config_id) || {};
     config.client_name = run.client_name;
-    const cases = selectCases(config, listCases(casesDir));
+    const pinned = serialList(run.device_serials);
+    if (pinned.length) Object.assign(config, { device_serials: JSON.stringify(pinned), device_filter: "" });
+    const scenario = run.scenario_json ? JSON.parse(run.scenario_json) : null;
+    if (scenario) {
+      // The scenario's own site or app overrides the configuration it borrowed devices and test users from.
+      config.launch_url = scenario.launchUrl || config.launch_url || "";
+      config.package_id = scenario.packageId || config.package_id || "";
+      config.parallel = 1;
+      config.account_policy = scenario.accountPolicy || config.account_policy || "none";
+    }
+    const skills = skillsDirs.length && !scenario ? loadSkills(skillsDirs) : [];
+    const cases = scenario
+      ? scenarioCases(scenario).map((item) => ({ caseId: item.caseId || "", title: item.title, client: "", tags: [], steps: item.steps, context: scenario.context || "" }))
+      : scopeCases(selectCases(config, listCases(casesDir)), run.case_keys)
+        .map((item) => ({ ...item, context: skills.length ? midsceneContext(selectSkills(skills, [caseSkillText(item)])) : "" }));
     const model = midsceneModel(current);
-    const shards = shardCases(cases.length, laneCount(config, cases.length));
+    const shards = shardCases(cases.length, Math.min(laneCount(config, cases.length), maxLanes));
     db.prepare("UPDATE runs SET lanes = ? WHERE id = ?").run(shards.length, run.id);
 
     // Devices are reserved before anything else so a run waiting for free phones holds no account or rows.
@@ -249,8 +292,8 @@ export function createWorker({ db, settings, reportsDir, casesDir, accounts: acc
         .run(run.id, item.caseId, item.title, JSON.stringify(item.steps.map((step) => ({ ...step, status: "pending", detail: "" })))).lastInsertRowid),
     }));
     shards.forEach((indices, lane) => indices.forEach((index) => { rows[index].lane = lane; }));
-    const saveRow = (row) => db.prepare("UPDATE run_cases SET status = ?, detail = ?, steps_json = ? WHERE id = ?")
-      .run(row.status, row.detail, JSON.stringify(row.steps), row.id);
+    const saveRow = (row) => db.prepare("UPDATE run_cases SET status = ?, detail = ?, steps_json = ?, files_json = ? WHERE id = ?")
+      .run(row.status, row.detail, JSON.stringify(row.steps), JSON.stringify(row.files || {}), row.id);
     const note = (text) => db.prepare("UPDATE runs SET message = ? WHERE id = ?").run(text, run.id);
 
     let status = "blocked";
@@ -263,9 +306,11 @@ export function createWorker({ db, settings, reportsDir, casesDir, accounts: acc
 
     // One lane = one browser or one farm device, its own test user and its share of the cases.
     async function runLane(lane, indices) {
-      const laneCases = indices.map((index) => cases[index]);
-      const onProgress = (local, steps) => {
+      // `fileKey` (the run_cases id) names screenshots, reports and videos of cases that have no TestRail id.
+      const laneCases = indices.map((index) => ({ ...cases[index], fileKey: String(rows[index].id) }));
+      const onProgress = (local, steps, files) => {
         rows[indices[local]].steps = steps;
+        if (files) rows[indices[local]].files = files;
         saveRow(rows[indices[local]]);
       };
       const prefix = shards.length > 1 ? `Hat ${lane + 1}: ` : "";
@@ -286,7 +331,7 @@ export function createWorker({ db, settings, reportsDir, casesDir, accounts: acc
         } else {
           const device = devices[lane];
           if (config.app_url) await farm.installApp(current, device.serial, config.app_url);
-          const remote = await farm.useDevice(current, device.serial);
+          const remote = await farm.useDevice(current, device.serial, { groupId: reservation.groupId });
           let connection;
           let adbPath = "";
           if (run.platform === "android") {

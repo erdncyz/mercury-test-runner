@@ -5,7 +5,7 @@
 // locked test users, reports, video, TestRail results, chat history, secret hygiene).
 // Usage: npm run test:e2e            (add --keep to leave Mercury running for browser inspection)
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,8 @@ async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
+// Remembers, per run, whether a report link or a step screenshot was visible while steps were still running.
+const liveSeen = new Map();
 async function waitRun(id, timeoutMs = 240_000) {
   const started = Date.now();
   let last = "";
@@ -61,8 +63,20 @@ async function waitRun(id, timeoutMs = 240_000) {
     const progress = run.cases.map((item) => `${item.case_key}:${item.status}`).join(" ");
     if (progress !== last) console.log(`  #${id} ${run.status} · ${progress} · ${run.message || ""}`);
     last = progress;
+    if (run.status === "running") {
+      const unfinished = run.cases.filter((item) => item.steps.some((step) => ["pending", "running"].includes(step.status)));
+      const seen = liveSeen.get(id) || { report: false, shot: false };
+      seen.report ||= unfinished.some((item) => item.files?.report);
+      seen.shot ||= unfinished.some((item) => item.steps.some((step) => step.shot));
+      const liveReport = unfinished.find((item) => item.files?.report)?.files.report;
+      if (liveReport && !seen.html) {
+        const response = await fetch(`${base}/reports/${id}/${liveReport}`, { headers: { cookie } });
+        if (response.ok) seen.html = await response.text();
+      }
+      liveSeen.set(id, seen);
+    }
     if (["passed", "failed", "blocked"].includes(run.status)) return run;
-    await wait(1000);
+    await wait(400);
   }
   throw new Error(`#${id} ${timeoutMs / 1000} sn içinde bitmedi`);
 }
@@ -135,6 +149,9 @@ try {
   check("C102 hatalı şifre uyarısını doğrular", byKey["102"]?.status === "passed", byKey["102"]?.detail);
   const c103 = byKey["103"]?.steps.map((step) => step.status) || [];
   check("C103 doğru adımda düşer, sonraki adım atlanır", byKey["103"]?.status === "failed" && c103.join(",") === "passed,failed,skipped", c103.join(","));
+  check("Düşen doğrulama bir kez yeniden denenir, sonuç değişmez", byKey["103"]?.steps[1].attempts === 2 && /^2 denemede de başarısız: Assertion failed/.test(byKey["103"].steps[1].detail),
+    byKey["103"]?.steps[1].detail.slice(0, 80));
+  check("Kayıtlı case'lerde de beceri notları Midscene'a gider", state.model.withContext > 0, `${state.model.withContext} model isteğinde`);
   check("Site tarafında gerçek giriş denemeleri görülür", state.logins.some((item) => item.ok) && state.logins.some((item) => !item.ok),
     state.logins.map((item) => `${item.email}:${item.ok ? "ok" : "red"}`).join(" "));
 
@@ -155,6 +172,34 @@ try {
   check("Midscene raporu ve webm video her case için yazılır",
     ["101", "102", "103"].every((key) => files.includes(`midscene-${key}.html`) && files.includes(`video-${key}.webm`)), files.join(", "));
   check("Geçici video klasörleri temizlenir", !files.some((name) => name.startsWith(".video")));
+  const executed = run.cases.flatMap((item) => item.steps.filter((step) => ["passed", "failed"].includes(step.status)).map((step) => ({ key: item.case_key, step })));
+  const missingShots = executed.filter(({ step }) => !step.shot || !files.includes(step.shot));
+  check("Yürütülen her adımın ekran görüntüsü saklanır", executed.length > 0 && !missingShots.length,
+    missingShots.length ? missingShots.map(({ key, step }) => `${key}:${step.action}`).join(", ") : `${executed.length} adım`);
+  const firstShot = await fetch(`${base}/reports/${runId}/${executed[0]?.step.shot}`, { headers: { cookie } });
+  check("Adım ekranı oturumla JPEG olarak açılır", firstShot.ok && firstShot.headers.get("content-type") === "image/jpeg"
+    && [...new Uint8Array(await firstShot.arrayBuffer()).subarray(0, 2)].join() === "255,216", `${firstShot.status} ${firstShot.headers.get("content-type")}`);
+  check("Case'in rapor ve video bağlantısı koşum ayrıntısında", run.cases.every((item) => item.files?.report === `midscene-${item.case_key}.html` && item.files?.video === `video-${item.case_key}.webm`));
+  check("Koşum sürerken adım ekranı ve Midscene raporu görünür", liveSeen.get(runId)?.shot && liveSeen.get(runId)?.report, JSON.stringify({ ...liveSeen.get(runId), html: undefined }));
+  // The mid-run copy must be a working Midscene report, not just a file: render it in a real browser.
+  const liveHtml = liveSeen.get(runId)?.html || "";
+  const livePath = join(dir, "live-report.html");
+  writeFileSync(livePath, liveHtml);
+  const { chromium } = await import("playwright");
+  const viewer = await chromium.launch();
+  let rendered = "";
+  try {
+    const page = await viewer.newPage();
+    await page.goto(`file://${livePath}`);
+    await page.waitForFunction(() => /Report\s+v\d/.test(document.body.innerText), null, { timeout: 20_000 }).catch(() => {});
+    rendered = await page.evaluate(() => document.body.innerText);
+  } finally {
+    await viewer.close();
+  }
+  check("Koşum ortasındaki Midscene raporu tarayıcıda açılır", liveHtml.length > 0 && /Report\s+v\d/.test(rendered) && /\b(Act|Tap|Input|Assert|Wait)\b/.test(rendered),
+    rendered.replace(/\s+/g, " ").slice(0, 120));
+  check("Koşum ortasındaki raporda da şifre maskeli", !USERS.some((user) => liveHtml.includes(user.password)));
+  check("Canlı rapor kopyasından geçici dosya kalmaz", !files.some((name) => name.startsWith(".")), files.filter((name) => name.startsWith(".")).join(", "));
   const index = await fetch(`${base}/reports/${runId}/index.html`, { headers: { cookie } });
   const indexHtml = await index.text();
   check("Rapor sayfası oturumla açılır", index.ok && indexHtml.includes("C101"));
@@ -187,6 +232,77 @@ try {
   check("Kullanıcı biterse ilgili hat açık hatayla düşer, diğeri koşar", second.status === "failed" && lanesWithoutUser.length > 0 && second.cases.some((item) => item.status === "passed"),
     second.cases.map((item) => `${item.case_key}:${item.status}`).join(" "));
   check("İkinci koşum da yeni TestRail run'ı açar", again.runs[0].testrail_run_id === "502");
+
+  // 6b. Ad-hoc scenario typed in chat: no YAML, no configuration; real browser and Midscene. Its case is filed in TestRail.
+  const trRuns = state.testrail.runs.length;
+  const adhoc = await api("/api/chat", { method: "POST", body: { message: `${fakes.urls.site} adresini aç, çerez bandını kabul et ve giriş formunun göründüğünü doğrula` } });
+  check("Chat senaryosu adımlara bölünür ve koşum açar", adhoc.runs[0]?.status === "queued" && adhoc.runs[0].scenario
+    && adhoc.runs[0].cases[0].steps.map((step) => step.action).join(",") === "launch,aiAct,aiAssert", adhoc.reply.split("\n")[0]);
+  const adhocRun = await waitRun(adhoc.runs[0].id);
+  const [openStep, actStep] = adhocRun.cases[0].steps;
+  check("Adımlarda süre, sayfa açılış ölçüleri ve Midscene'in AI kullanımı kaydedilir",
+    openStep.metrics?.load?.domContentLoadedMs > 0 && openStep.metrics.load.requests >= 1 && /^Chromium /.test(openStep.metrics.env?.browser || "")
+    && actStep.metrics?.durationMs > 0 && actStep.metrics.ai?.calls > 0 && actStep.metrics.ai.totalTokens > 0,
+    JSON.stringify([openStep.metrics, actStep.metrics]));
+  check("Chat senaryosu gerçek tarayıcıda Midscene ile geçer", adhocRun.status === "passed" && adhocRun.cases[0].steps.every((step) => step.status === "passed"),
+    adhocRun.cases[0].steps.map((step) => `${step.action}:${step.status}`).join(" "));
+  const wrong = await waitRun((await api("/api/chat", { method: "POST", body: { message: `${fakes.urls.site} aç, çerez bandını kabul et ve hata uyarısının göründüğünü doğrula` } })).runs[0].id);
+  check("Yanlış beklenti doğrulama adımında düşer", wrong.status === "failed" && wrong.cases[0].steps.map((step) => step.status).join(",") === "passed,passed,failed",
+    wrong.cases[0].steps.map((step) => `${step.action}:${step.status}`).join(" "));
+  const scenarioRuns = state.testrail.runs.slice(trRuns);
+  const filed = state.testrail.cases.filter((item) => item.title === "Sayfa kontrolü");
+  check("Chat senaryosu adıyla TestRail run'ı açar, case'i Mercury bölümüne bir kez yazılır",
+    adhocRun.config_name === "Sayfa kontrolü · Web" && scenarioRuns.length === 2 && scenarioRuns.every((item) => item.name === "Sayfa kontrolü · Web" && item.suite_id === 9)
+    && filed.length === 1 && state.testrail.sections.some((item) => item.name === "Mercury · Anlık senaryolar") && adhocRun.testrail_run_id === String(scenarioRuns[0].id),
+    `${adhocRun.config_name} · ${JSON.stringify(scenarioRuns.map((item) => [item.name, item.case_ids]))} · cases=${filed.length}`);
+  const scenarioResults = (id) => state.testrail.results.find((item) => item.runId === id)?.results || [];
+  check("Chat senaryosunun sonucu TestRail'e yazılır",
+    scenarioResults(scenarioRuns[0]?.id)[0]?.case_id === filed[0]?.id && scenarioResults(scenarioRuns[0]?.id)[0]?.status_id === 1 && scenarioResults(scenarioRuns[1]?.id)[0]?.status_id === 5,
+    JSON.stringify(scenarioRuns.map((item) => scenarioResults(item.id))));
+  check("Serbest senaryoyu QA ajanı (model) planlar", state.model.kinds.qa >= 2 && /Adresi açıp/.test(adhoc.reply), JSON.stringify(state.model.kinds));
+
+  // 6c. QA agent: "login ol" names neither a page nor a field; the agent designs the case, Midscene finds the form.
+  for (const user of USERS) user.isLocked = false;
+  const loginsBefore = state.logins.length;
+  const qaLogin = await api("/api/chat", { method: "POST", body: { message: "Demo Mağaza'da login ol" } });
+  const qaRun = qaLogin.runs?.[0];
+  check("\"login ol\" projenin konfigürasyonunda test kullanıcılı senaryoya çevrilir",
+    qaRun?.status === "queued" && qaRun.scenario && qaRun.config_name === "Test kullanıcısıyla giriş · Web (Chrome)" && /test kullanıcısıyla oturum/.test(qaLogin.reply)
+    && qaRun.cases[0].steps.map((step) => step.action).join(",") === "launch,aiAct,aiAct,aiInput,aiInput,aiKeyboardPress,aiWaitFor,aiString,aiBoolean,aiScroll,aiString,aiAssert", qaLogin.reply.split("\n")[0]);
+  const qaDone = await waitRun(qaRun.id);
+  const typedEmail = qaDone.cases[0].steps.find((step) => step.action === "aiInput")?.text || "";
+  check("QA ajanının login senaryosu gerçek tarayıcıda test kullanıcısıyla geçer",
+    qaDone.status === "passed" && state.logins.slice(loginsBefore).some((item) => item.ok && item.email === qaDone.account_email) && typedEmail.endsWith(qaDone.account_email),
+    `${qaDone.cases[0].steps.map((step) => `${step.action}:${step.status}`).join(" ")} · ${qaDone.account_email}`);
+  const loginPrompt = state.qa.systems.at(-1) || "";
+  check("QA ajanına çekirdek ve giriş becerisi yüklenir, alakasızlar yüklenmez",
+    /<skill name="QA çekirdeği">/.test(loginPrompt) && /<skill name="Giriş ve oturum">/.test(loginPrompt) && !/<skill name="Video ve medya oynatma">/.test(loginPrompt)
+    && qaLogin.skills?.includes("Giriş ve oturum"), (qaLogin.skills || []).join(" · "));
+  const readSteps = qaDone.cases[0].steps.filter((step) => ["aiString", "aiBoolean"].includes(step.action));
+  check("Enter tuşu formu gönderir; ekrandan okunan değer saklanıp sonraki adımda karşılaştırılır",
+    readSteps.length === 3 && readSteps[0].detail === "baslik = Demo Mağaza · Üye alanı" && readSteps.every((step) => step.status === "passed")
+    && qaDone.cases[0].steps.find((step) => step.action === "aiKeyboardPress")?.text === "Enter",
+    readSteps.map((step) => `${step.action}:${step.status}:${step.detail}`).join(" | "));
+  check("Beceri notları Midscene'a AI bağlamı olarak gider", state.model.withContext > 0, `${state.model.withContext} model isteğinde`);
+  check("Senaryo adımlarında ve koşum yanıtında şifre yok", !USERS.some((user) => JSON.stringify(qaDone).includes(user.password)));
+  const followUp = await api("/api/chat", { method: "POST", body: { message: "son koşum ne oldu?", conversationId: qaLogin.conversationId } });
+  check("Sonuç sorusunda hata analizi becerisi yüklenir", /<skill name="Hata analizi ve raporlama">/.test(state.qa.systems.at(-1) || ""), (followUp.skills || []).join(" · "));
+  check("QA ajanı sohbetteki önceki koşumu bilir", !followUp.runs && followUp.reply.includes(`#${qaRun.id} passed`), followUp.reply);
+  const sent = JSON.stringify(state.qa.inputs);
+  check("QA ajanına şifre, anahtar veya hesap servisi bilgisi gitmez",
+    ![fakes.service.password, fakes.service.username, fakes.urls.users, "fake-model-key", "tr-key", ...USERS.map((user) => user.password)].some((secret) => sent.includes(secret)));
+
+  const trBefore = state.testrail.runs.length;
+  const subset = await api("/api/chat", { method: "POST", body: { message: "Demo Mağaza'nın hatalı şifre testini koş" } });
+  const subsetRun = subset.runs?.[0];
+  check("QA ajanı TestRail case'ini adından bulur, yalnız onu yeni run'a ekler",
+    subsetRun && !subsetRun.scenario && state.testrail.runs.length === trBefore + 1 && state.testrail.runs.at(-1).case_ids.join(",") === "102"
+    && subsetRun.cases.map((item) => item.case_key).join(",") === "102", `${subset.reply.split("\n")[0]} · case_ids=${state.testrail.runs.at(-1)?.case_ids}`);
+  const subsetDone = await waitRun(subsetRun.id);
+  check("Seçilen tek case koşar ve geçer", subsetDone.status === "passed" && subsetDone.cases.length === 1 && subsetDone.cases[0].case_key === "102",
+    subsetDone.cases.map((item) => `${item.case_key}:${item.status}`).join(" "));
+  const hello = await api("/api/chat", { method: "POST", body: { message: "selam, neler yapabilirsin?" } });
+  check("Soru ve sohbet koşum açmadan yanıtlanır", !hello.runs && /Demo Mağaza/.test(hello.reply), hello.reply);
 
   // 7. Things that break in real life: TestRail down, application down, wrong model key.
   for (const user of USERS) user.isLocked = false;

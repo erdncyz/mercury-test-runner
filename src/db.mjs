@@ -126,9 +126,17 @@ export function openDb(dataDir) {
     );
   `);
   const runCaseColumns = db.prepare("PRAGMA table_info(run_cases)").all().map((column) => column.name);
+  // Turns that belong together share a conversation; older turns each become their own conversation.
+  if (!db.prepare("PRAGMA table_info(chat_messages)").all().some((column) => column.name === "conversation_id")) {
+    db.exec("ALTER TABLE chat_messages ADD COLUMN conversation_id INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE chat_messages SET conversation_id = turn WHERE conversation_id = 0");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS chat_messages_conversation ON chat_messages (user_id, conversation_id)");
   if (!runCaseColumns.includes("steps_json")) db.exec("ALTER TABLE run_cases ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]'");
   // With parallel lanes each case runs with its own test user; the run row only holds the combined list.
   if (!runCaseColumns.includes("account_email")) db.exec("ALTER TABLE run_cases ADD COLUMN account_email TEXT NOT NULL DEFAULT ''");
+  // Report, videos and the like for one case ({ report, video, videos }); filled while the case runs.
+  if (!runCaseColumns.includes("files_json")) db.exec("ALTER TABLE run_cases ADD COLUMN files_json TEXT NOT NULL DEFAULT '{}'");
   const configColumns = new Set(db.prepare("PRAGMA table_info(configs)").all().map((column) => column.name));
   const configMigrations = {
     environment: "ALTER TABLE configs ADD COLUMN environment TEXT NOT NULL DEFAULT 'test'",
@@ -143,14 +151,33 @@ export function openDb(dataDir) {
   }
   const runColumns = new Set(db.prepare("PRAGMA table_info(runs)").all().map((column) => column.name));
   if (!runColumns.has("device_hint")) db.exec("ALTER TABLE runs ADD COLUMN device_hint TEXT NOT NULL DEFAULT ''");
+  // Serials/UDIDs named in the chat message; they replace the configuration's device pool for this run.
+  if (!runColumns.has("device_serials")) db.exec("ALTER TABLE runs ADD COLUMN device_serials TEXT NOT NULL DEFAULT '[]'");
   if (!runColumns.has("retry_at")) db.exec("ALTER TABLE runs ADD COLUMN retry_at TEXT");
   if (!runColumns.has("lanes")) db.exec("ALTER TABLE runs ADD COLUMN lanes INTEGER NOT NULL DEFAULT 1");
+  // What started the run: '' for chat, 'schedule' for a configuration's schedule.
+  if (!runColumns.has("trigger_kind")) db.exec("ALTER TABLE runs ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT ''");
   if (!runColumns.has("testrail_error")) db.exec("ALTER TABLE runs ADD COLUMN testrail_error TEXT NOT NULL DEFAULT ''");
+  // Ad-hoc chat scenarios carry their own cases and target instead of YAML cases:
+  // { title, steps, cases: [{ title, steps }], launchUrl, packageId, accountPolicy } (older rows have only title/steps).
+  if (!runColumns.has("scenario_json")) db.exec("ALTER TABLE runs ADD COLUMN scenario_json TEXT NOT NULL DEFAULT ''");
+  // Scenario runs used to be named "Senaryo · Web"; they are named after the scenario now ("Kullanıcı girişi · Web").
+  const rename = db.prepare("UPDATE runs SET config_name = ? WHERE id = ?");
+  for (const row of db.prepare("SELECT id, config_name, scenario_json FROM runs WHERE scenario_json != '' AND config_name LIKE 'Senaryo · %'").all()) {
+    let title = "";
+    try { title = String(JSON.parse(row.scenario_json).title || "").trim(); } catch { /* unreadable scenario keeps its name */ }
+    if (title) rename.run(`${title} · ${row.config_name.slice("Senaryo · ".length)}`, row.id);
+  }
+  // Chat can run a subset of a configuration's cases ("giriş testlerini koş"): their keys, or [] for all of them.
+  if (!runColumns.has("case_keys")) db.exec("ALTER TABLE runs ADD COLUMN case_keys TEXT NOT NULL DEFAULT '[]'");
   const laneColumns = {
     device_serials: "ALTER TABLE configs ADD COLUMN device_serials TEXT NOT NULL DEFAULT '[]'",
     parallel: "ALTER TABLE configs ADD COLUMN parallel INTEGER NOT NULL DEFAULT 1",
     account_filters: "ALTER TABLE configs ADD COLUMN account_filters TEXT NOT NULL DEFAULT '{}'",
     device_wait_minutes: "ALTER TABLE configs ADD COLUMN device_wait_minutes INTEGER NOT NULL DEFAULT 30",
+    // Recurring run ({ enabled, everyDays, time, startDate, timeZone, since, userId }); see src/schedule.mjs.
+    schedule_json: "ALTER TABLE configs ADD COLUMN schedule_json TEXT NOT NULL DEFAULT ''",
+    schedule_last_at: "ALTER TABLE configs ADD COLUMN schedule_last_at TEXT",
   };
   const currentConfigColumns = new Set(db.prepare("PRAGMA table_info(configs)").all().map((column) => column.name));
   for (const [column, statement] of Object.entries(laneColumns)) {
@@ -166,6 +193,12 @@ export function openDb(dataDir) {
     db.prepare("DELETE FROM settings WHERE key = 'device_wait_minutes'").run();
   }
   db.prepare("DELETE FROM settings WHERE key IN ('android_concurrency', 'ios_concurrency')").run();
+  // The browser limit used to default to 2; an untouched 2 becomes automatic (sized to this machine) once.
+  // The marker keeps a 2 the admin sets later.
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'web_concurrency_auto_migrated'").get()) {
+    db.prepare("UPDATE settings SET value = '' WHERE key = 'web_concurrency' AND value = '2'").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('web_concurrency_auto_migrated', '1')").run();
+  }
   const sourceColumns = new Set(db.prepare("PRAGMA table_info(sources)").all().map((column) => column.name));
   const sourceMigrations = {
     type: "ALTER TABLE sources ADD COLUMN type TEXT NOT NULL DEFAULT 'http'",
@@ -215,7 +248,7 @@ export function seed(db) {
     testrail_project_id: "",
     farm_base_url: "",
     farm_token: "",
-    web_concurrency: "2",
+    web_concurrency: "",
     update_manifest_url: "",
     public_base_url: "",
   };

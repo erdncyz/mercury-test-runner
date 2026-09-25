@@ -23,7 +23,7 @@ const BOX = {
 };
 const COLOR = { login: [29, 78, 216], member: [21, 128, 61], error: [185, 28, 28], cookie: [217, 119, 6] };
 
-export const state = { logins: [], testrail: { runs: [], plans: [], results: [] }, model: { calls: 0, kinds: {} }, lockedIds: [], fail: { testrail: false } };
+export const state = { logins: [], testrail: { runs: [], plans: [], results: [], sections: [], cases: [] }, model: { calls: 0, kinds: {}, withContext: 0 }, qa: { inputs: [], systems: [] }, lockedIds: [], fail: { testrail: false } };
 
 function listen(handler, port) {
   const server = createServer(async (req, res) => {
@@ -120,7 +120,9 @@ async function users(req, res, body) {
 }
 
 async function testrail(req, res, body) {
-  const route = decodeURIComponent(req.url.split("?")[1] || "");
+  // TestRail puts the endpoint in the query string and its own filters after "&" (get_projects&is_completed=0).
+  const route = decodeURIComponent(req.url.split("?")[1] || "").split("&")[0];
+  const query = new URLSearchParams(decodeURIComponent(req.url.split("?")[1] || "").replace(/^[^&]*/, ""));
   if (req.headers.authorization !== `Basic ${Buffer.from("qa@demo.test:tr-key").toString("base64")}`) return json(res, 401, { error: "Authentication failed" });
   if (route === "/api/v2/get_projects") return json(res, 200, { projects: [{ id: 1, name: "Demo" }] });
   if (state.fail.testrail) {
@@ -142,6 +144,23 @@ async function testrail(req, res, body) {
   if (results) {
     state.testrail.results.push({ runId: Number(results[1]), results: body.results });
     return json(res, 200, []);
+  }
+  // Chat scenarios file their cases under a Mercury section before the run opens.
+  if (/^\/api\/v2\/get_suites\/\d+$/.test(route)) return json(res, 200, [{ id: 9, name: "Master" }]);
+  if (/^\/api\/v2\/get_sections\/\d+$/.test(route)) return json(res, 200, { sections: state.testrail.sections.filter((item) => item.suite_id === Number(query.get("suite_id"))), _links: { next: null } });
+  if (/^\/api\/v2\/add_section\/\d+$/.test(route)) {
+    const section = { id: 800 + state.testrail.sections.length + 1, parent_id: null, ...body };
+    state.testrail.sections.push(section);
+    return json(res, 200, section);
+  }
+  if (/^\/api\/v2\/get_cases\/\d+$/.test(route)) {
+    return json(res, 200, { cases: state.testrail.cases.filter((item) => item.section_id === Number(query.get("section_id"))), _links: { next: null } });
+  }
+  const addCase = route.match(/^\/api\/v2\/add_case\/(\d+)$/);
+  if (addCase) {
+    const created = { id: 9000 + state.testrail.cases.length + 1, section_id: Number(addCase[1]), ...body };
+    state.testrail.cases.push(created);
+    return json(res, 200, created);
   }
   return json(res, 400, { error: `Bilinmeyen uç: ${route}` });
 }
@@ -200,6 +219,66 @@ const reply = (content) => ({
   usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
 });
 
+// Chat's QA agent asks the same model to plan. Like a real model it only sees the sentence, the conversation and
+// the catalog Mercury sends, and answers with the JSON decision its prompt asks for.
+function qaDecision({ message, catalog, conversation }) {
+  const text = message.toLocaleLowerCase("tr");
+  const config = catalog.find((item) => text.includes(item.project.toLocaleLowerCase("tr"))) || null;
+  const url = /https?:\/\/[^\s,]+/.exec(message)?.[0] || "";
+  if (/neler yapabilirsin|merhaba|selam/.test(text)) {
+    return { intent: "reply", reply: `Merhaba! ${[...new Set(catalog.map((item) => item.project))].join(", ")} projesinin kayıtlı case'lerini koşabilir ya da anlattığın akışı test case'e çevirip koşabilirim.` };
+  }
+  if (/son koşum|ne oldu/.test(text)) {
+    const last = conversation.flatMap((turn) => turn.runs || []).at(-1);
+    return { intent: "reply", reply: last ? `Son koşum #${last.id} ${last.status} bitti: ${last.cases.map((item) => `${item.title} ${item.status}`).join(", ")}` : "Bu sohbette henüz koşum yok." };
+  }
+  if (config && /test(ini|lerini)? koş/.test(text)) {
+    const bigrams = (title) => {
+      const words = title.toLocaleLowerCase("tr").split(/\s+/).filter((word) => !/^c\d+$/.test(word));
+      return words.slice(1).map((word, index) => `${words[index]} ${word}`);
+    };
+    const caseKeys = config.cases.filter((item) => bigrams(item.title).some((pair) => text.includes(pair))).map((item) => item.key);
+    return { intent: "run_suite", reply: `${config.project} projesinde ${caseKeys.length} case seçtim.`, run: { configIds: [config.id], caseKeys } };
+  }
+  if (config && /login ol|giriş yap/.test(text)) {
+    return {
+      intent: "scenario",
+      reply: `${config.project} sitesinde giriş formunu bulup test kullanıcısıyla oturum açacağım.`,
+      scenario: {
+        configId: config.id, url: "", packageId: "", platform: config.platform,
+        cases: [{
+          title: "Test kullanıcısıyla giriş",
+          steps: [
+            { action: "aiAct", text: "Çerez, bildirim veya kampanya penceresi varsa kapat" },
+            { action: "aiAct", text: "Giriş formu görünmüyorsa sayfadaki Giriş / Oturum aç / Login bağlantısını bul ve tıkla" },
+            { action: "aiInput", locate: "E-posta alanı", value: "{{account.email}}" },
+            { action: "aiInput", locate: "Şifre alanı", value: "{{account.password}}" },
+            { action: "aiKeyboardPress", keyName: "Enter" },
+            { action: "aiWaitFor", text: "Üye alanı açıldı", timeout: 20000 },
+            { action: "aiString", prompt: "Üst başlıktaki metin", name: "baslik" },
+            { action: "aiBoolean", prompt: "Hoş geldin mesajı görünüyor mu?", expect: "true" },
+            { action: "aiScroll", direction: "down", scrollType: "scrollToBottom" },
+            { action: "aiString", prompt: "Üst başlıktaki metin", expect: "{{saved.baslik}}" },
+            { action: "aiAssert", text: "Kullanıcı giriş yapmış: hoş geldin mesajı görünüyor" },
+          ],
+        }],
+      },
+    };
+  }
+  if (url) {
+    const clauses = message.replace(url, " ").split(/,\s+|\s+ve\s+/).map((part) => part.trim()).filter((part) => part && !/^(adresini |adresine )?(aç|git)$/i.test(part));
+    return {
+      intent: "scenario",
+      reply: "Adresi açıp istediğin kontrolleri yapacağım.",
+      scenario: {
+        configId: null, url, platform: "web",
+        cases: [{ title: "Sayfa kontrolü", steps: clauses.map((part) => ({ action: /doğrula|kontrol/i.test(part) ? "aiAssert" : "aiAct", text: part })) }],
+      },
+    };
+  }
+  return { intent: "reply", reply: `Hangi projede koşayım? ${catalog.map((item) => `${item.project} · ${item.configuration}`).join(", ")}` };
+}
+
 async function model(req, res, body) {
   const url = new URL(req.url, "http://model");
   if (req.headers.authorization !== "Bearer fake-model-key") return json(res, 401, { error: { message: "Invalid API key" } });
@@ -209,21 +288,38 @@ async function model(req, res, body) {
   if (url.pathname !== "/v1/chat/completions") return json(res, 404, { error: { message: "unknown" } });
   state.model.calls += 1;
   const system = String(body.messages.find((message) => message.role === "system")?.content || "");
+  const count = (kind) => { state.model.kinds[kind] = (state.model.kinds[kind] || 0) + 1; };
+  if (system.includes("You are the Mercury QA agent")) {
+    count("qa");
+    const input = JSON.parse(body.messages.at(-1).content);
+    state.qa.inputs.push(input);
+    state.qa.systems.push(system);
+    return json(res, 200, reply(JSON.stringify(qaDecision(input))));
+  }
   const text = body.messages.flatMap((message) => (typeof message.content === "string" ? [message.content] : message.content.map((part) => part.text || ""))).join("\n");
   const screen = await readScreen(body.messages);
-  const count = (kind) => { state.model.kinds[kind] = (state.model.kinds[kind] || 0) + 1; };
 
   if (system.includes("helps identify UI elements")) {
     count("locate");
-    const find = /Find:\s*([^\n]+)/.exec(text)?.[1] || "";
+    // With an agent AI context Midscene sends "<CONTEXT>…</CONTEXT> <LOCATE_TARGET>…</LOCATE_TARGET>".
+    const find = /<LOCATE_TARGET>\s*([^\n]+)/.exec(text)?.[1] || /Find:\s*([^\n]+)/.exec(text)?.[1] || "";
     const target = targetOf(find, screen);
     return json(res, 200, reply(JSON.stringify(target ? { bbox: box(target, screen) } : { bbox: [], error: `"${find}" is not visible on the screen` })));
   }
+  if (text.includes("Test ortamı notları")) state.model.withContext += 1;
   if (system.includes("DATA_DEMAND")) {
     count("insight");
-    const statement = /whether the following statement is true:\s*([^"\n]+)/.exec(text)?.[1] || "";
-    const truth = judge(statement, screen);
-    return json(res, 200, reply(`<observation>login=${screen.login} member=${screen.member} error=${screen.error} cookie=${screen.cookie}</observation><data-json>{"StatementIsTruthy": ${truth}}</data-json>`));
+    const observation = `<observation>login=${screen.login} member=${screen.member} error=${screen.error} cookie=${screen.cookie}</observation>`;
+    const statement = /whether the following statement is true:\s*([^"\n]+)/.exec(text)?.[1];
+    if (statement !== undefined) return json(res, 200, reply(`${observation}<data-json>{"StatementIsTruthy": ${judge(statement, screen)}}</data-json>`));
+    // aiBoolean / aiString / aiNumber: {"<Type>": "<Type>, based on the current screenshot …, <demand>"}, answered under the same key.
+    const typed = /"(Boolean|String|Number)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
+    const kind = typed?.[1] || "String";
+    const demand = typed?.[2] || "";
+    count(`read-${kind}`);
+    const header = screen.member ? "Demo Mağaza · Üye alanı" : screen.login ? "Demo Mağaza · Giriş yap" : "";
+    const value = kind === "Boolean" ? judge(demand, screen) : kind === "Number" ? (screen.member ? 1 : 0) : header;
+    return json(res, 200, reply(`${observation}<data-json>${JSON.stringify({ [kind]: value })}</data-json>`));
   }
   if (system.includes("manipulate the UI")) {
     count("plan");

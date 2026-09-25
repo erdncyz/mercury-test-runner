@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { configurationPlan, laneCount, normalizeConfigInput, selectCases, serialList, shardCases } from "../src/planning.mjs";
+import {
+  autoWebLimit, configurationPlan, fairLaneGrants, laneCount, normalizeConfigInput, selectCases, serialList, shardCases, webLimit, webLimitSetting,
+} from "../src/planning.mjs";
 
 const cases = [
   { client: "demo", caseId: "1", tags: ["smoke", "login"] },
@@ -99,4 +101,31 @@ test("paralel hat sayısı UDID havuzu ve case sayısıyla sınırlanır, case'l
   assert.equal(normalizeConfigInput({ name: "x", platform: "ios", deviceWaitMinutes: "120" }).deviceWaitMinutes, 120);
   assert.throws(() => normalizeConfigInput({ name: "x", platform: "web", parallel: 0 }), /1–20/);
   assert.deepEqual(normalizeConfigInput({ name: "x", platform: "ios", deviceSerials: "U1\nU2", accountFilters: { userPackage: " FULL " } }).accountFilters, { userPackage: "FULL" });
+});
+
+test("otomatik tarayıcı sınırı RAM ve çekirdek sayısından hesaplanır; elle yazılan sayı önceliklidir", () => {
+  assert.equal(autoWebLimit({ memoryMb: 16 * 1024, cores: 10 }), 12, "16 GB Mac mini: RAM sınırlar");
+  assert.equal(autoWebLimit({ memoryMb: 32 * 1024, cores: 10 }), 15, "32 GB: işlemci sınırlar");
+  assert.equal(autoWebLimit({ memoryMb: 4 * 1024, cores: 2 }), 1, "küçük makinede en az 1");
+  assert.equal(autoWebLimit({ memoryMb: 512 * 1024, cores: 64 }), 40, "üst sınır");
+  const machine = { memoryMb: 16 * 1024, cores: 10 };
+  assert.equal(webLimit({ web_concurrency: "" }, machine), 12);
+  assert.equal(webLimit({ web_concurrency: "otomatik" }, machine), 12);
+  assert.equal(webLimit({ web_concurrency: "3" }, machine), 3);
+  assert.deepEqual(["5", " 7 ", "0", "-1", "2.5", "otomatik", ""].map(webLimitSetting), ["5", "7", "", "", "", "", ""]);
+});
+
+test("boş hatlar bekleyen kullanıcılar arasında adil bölünür", () => {
+  const grants = (runs, free, running) => Object.fromEntries(fairLaneGrants(runs, free, running));
+  // A asked for 20 lanes first, B and C for one each: nobody waits behind A's wide run.
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 20 }, { id: 2, user: "B", lanes: 1 }, { id: 3, user: "C", lanes: 1 }], 12), { 1: 10, 2: 1, 3: 1 });
+  // Alone, a wide run takes every free lane but never more than the server allows.
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 20 }], 12), { 1: 12 });
+  // Equal demand: lanes alternate, so both get half.
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 8 }, { id: 2, user: "B", lanes: 8 }], 6), { 1: 3, 2: 3 });
+  // A user who already has lanes running goes last; one free lane goes to the user with none.
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 1 }, { id: 2, user: "B", lanes: 1 }], 1, new Map([["A", 4]])), { 2: 1 });
+  // One user's runs start oldest first; the one that does not fit keeps waiting.
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 1 }, { id: 2, user: "A", lanes: 1 }, { id: 3, user: "A", lanes: 1 }], 2), { 1: 1, 2: 1 });
+  assert.deepEqual(grants([{ id: 1, user: "A", lanes: 2 }], 0), {});
 });

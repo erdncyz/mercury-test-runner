@@ -29,9 +29,14 @@
     <symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/></symbol>
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   </svg>
 
   <div id="gate" class="gate" hidden>
+    <div class="gate-lang lang-switcher segmented" role="group" aria-label="Dil">
+      <button type="button" data-lang="tr">TR</button>
+      <button type="button" data-lang="en">EN</button>
+    </div>
     <main class="gate-inner" aria-labelledby="gate-title">
       <div class="brand-mark" aria-hidden="true"><span>M</span></div>
       <h1 id="gate-title">Mercury Test Runner</h1>
@@ -53,7 +58,7 @@
         </div>
         <p id="login-error" class="notice error" role="alert" hidden></p>
         <button type="submit" class="btn primary lg block">Devam et</button>
-        <p class="hint center">İlk kurulum hesabı: <code>mercury@test.com</code> · <code>Mercury</code></p>
+        <p class="hint center" data-i18n-html="loginSeedAccount">İlk kurulum hesabı: <code>mercury@test.com</code> · <code>Mercury</code></p>
       </form>
 
       <form id="register-form" class="stack" role="tabpanel" aria-labelledby="tab-register" hidden novalidate>
@@ -77,11 +82,16 @@
       <div class="topbar-row">
         <a href="#/chat" class="logo" aria-label="Mercury Test Runner ana sayfa">
           <span class="brand-mark sm" aria-hidden="true"><span>M</span></span>
-          <span class="logo-text">Mercury</span>
+          <span class="logo-stack">
+            <span class="logo-text">Mercury Test Runner</span>
+            <span class="logo-credit">Developed by Erdinç YILMAZ</span>
+          </span>
         </a>
-        <span class="crumb-sep" aria-hidden="true">/</span>
-        <span class="workspace">Test Runner</span>
         <div class="top-right">
+          <div class="lang-switcher segmented" role="group" aria-label="Dil">
+            <button type="button" data-lang="tr">TR</button>
+            <button type="button" data-lang="en">EN</button>
+          </div>
           <button type="button" id="update" class="pill info" hidden></button>
           <button type="button" id="model-chip" class="pill"><span class="dot"></span><span class="pill-text"></span></button>
           <div class="menu-wrap">
@@ -109,13 +119,18 @@
 
     <main id="main">
       <section id="view-chat" class="view chat" aria-label="Chat">
-        <div id="model-banner" class="banner" hidden></div>
+        <div class="chat-top">
+          <div id="model-banner" class="banner" hidden></div>
+          <div class="chat-head">
+            <button type="button" id="chat-new" class="btn primary"><svg class="icon"><use href="#i-plus"/></svg>Yeni chat</button>
+          </div>
+        </div>
         <div id="thread" class="thread" aria-live="polite"></div>
         <div class="composer-dock">
           <div id="suggestions" class="suggestions" aria-label="Hızlı komutlar"></div>
           <form id="chat-form" class="composer">
             <label for="chat-input" class="sr-only">Mesaj</label>
-            <textarea id="chat-input" name="message" rows="1" placeholder="Bir koşum iste… örn. örnek proje web chrome koş" autocomplete="off"></textarea>
+            <textarea id="chat-input" name="message" rows="1" placeholder="Koşum ya da test isteği yaz… örn. proje adında login ol" autocomplete="off"></textarea>
             <button type="submit" class="send" aria-label="Gönder"><svg class="icon"><use href="#i-arrow-up"/></svg></button>
           </form>
           <p class="hint center">Enter ile gönder · Shift+Enter yeni satır · Ön kontrolü geçen her koşum yeni bir TestRail run açar</p>
@@ -128,7 +143,7 @@
             <h1 id="history-title">Chat geçmişi</h1>
             <p id="history-owner" class="muted"></p>
           </div>
-          <a href="#/chat" class="btn primary">Yeni chat</a>
+          <button type="button" id="history-new" class="btn primary"><svg class="icon"><use href="#i-plus"/></svg>Yeni chat</button>
         </div>
         <div class="history-toolbar">
           <div class="search-box">
@@ -137,6 +152,7 @@
             <input id="history-search" type="search" placeholder="Mesajlarda ve yanıtlarda ara" autocomplete="off">
           </div>
           <span id="history-info" class="muted small" role="status"></span>
+          <button type="button" id="history-clear" class="btn ghost sm" hidden>Tümünü sil</button>
         </div>
         <div id="history-list" class="history-list" aria-live="polite"></div>
       </section>
@@ -145,13 +161,23 @@
         <div class="page-head">
           <div>
             <h1 id="runs-title">Koşumlar</h1>
-            <p class="muted">Her komut yeni bir koşum ve TestRail run açar. Satıra tıklayınca adımlar açılır.</p>
+            <p class="muted">Koşumlar proje ve güne göre gruplanır; her komut yeni bir koşum ve TestRail run açar. Satıra tıklayınca case'ler açılır.</p>
           </div>
           <button type="button" id="runs-refresh" class="btn secondary"><svg class="icon"><use href="#i-refresh"/></svg>Yenile</button>
         </div>
-        <div id="run-stats" class="stats"></div>
-        <div id="run-filters" class="segmented" role="group" aria-label="Duruma göre filtrele"></div>
-        <div id="run-list"></div>
+        <div id="run-stats" class="stats" hidden></div>
+        <section id="run-schedules" class="run-schedules" aria-labelledby="run-schedules-title" hidden>
+          <h2 id="run-schedules-title"><svg class="icon"><use href="#i-clock"/></svg>Zamanlanmış koşumlar</h2>
+          <div id="run-schedule-list" class="table-card"></div>
+        </section>
+        <div id="run-toolbar" class="run-toolbar" hidden>
+          <div id="run-filters" class="segmented" role="group" aria-label="Duruma göre filtrele"></div>
+          <div class="run-toolbar-right">
+            <button type="button" id="run-scheduled-only" class="pill" aria-pressed="false"><svg class="icon"><use href="#i-clock"/></svg>Yalnız zamanlanmış</button>
+            <select id="run-project" aria-label="Projeye göre filtrele"></select>
+          </div>
+        </div>
+        <div id="run-list" class="run-groups"></div>
       </section>
 
       <section id="view-configs" class="view page" aria-labelledby="configs-title" hidden>
@@ -198,6 +224,19 @@
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
 
+    <dialog id="confirm-dialog" class="dialog confirm" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <form method="dialog">
+        <div class="dialog-body">
+          <h2 id="confirm-title"></h2>
+          <p id="confirm-message" class="muted"></p>
+        </div>
+        <div class="dialog-foot">
+          <button type="submit" value="cancel" id="confirm-cancel" class="btn secondary">Vazgeç</button>
+          <button type="submit" value="ok" id="confirm-ok" class="btn danger">Sil</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="config-dialog" class="dialog wide">
       <form id="config-form" method="dialog" novalidate>
         <div class="dialog-head">
@@ -214,8 +253,9 @@
             <legend>Temel</legend>
             <div class="grid-2">
               <div class="field" id="config-client-field">
-                <label for="config-client">Client</label>
-                <select id="config-client"></select>
+                <label for="config-client">Proje</label>
+                <select id="config-client" aria-describedby="config-client-help"></select>
+                <p class="field-help" id="config-client-help"></p>
               </div>
               <div class="field">
                 <label for="config-platform">Platform</label>
@@ -229,7 +269,7 @@
             </div>
             <div class="grid-2" id="config-new-client" hidden>
               <div class="field">
-                <label for="config-client-name">Yeni client adı</label>
+                <label for="config-client-name">Yeni proje adı</label>
                 <input id="config-client-name" placeholder="Mobil Uygulama">
               </div>
               <div class="field">
@@ -251,7 +291,7 @@
             <div class="field">
               <label for="config-aliases">Chat takma adları</label>
               <input id="config-aliases" placeholder="android, mobil android">
-              <p class="field-help">Virgülle ayır. Chat bu ifadelerle bu satırı seçer; aynı client'ta iki satır aynı takma adı kullanamaz.</p>
+              <p class="field-help">Virgülle ayır. Chat bu ifadelerle bu satırı seçer; aynı projede iki satır aynı takma adı kullanamaz.</p>
             </div>
             <div class="check-row">
               <label><input id="config-enabled" type="checkbox"> Aktif</label>
@@ -300,6 +340,11 @@
               <p class="field-help" id="config-serials-help">Girilirse yalnız bu cihazlar kullanılır. Paralel koşum sayısı kadar UDID gerekir; fazlası yedek havuzdur.</p>
             </div>
             <div class="field" data-for="mobile">
+              <span class="label">Mercury Farm cihazları</span>
+              <div id="config-farm-devices" class="device-picker" role="group" aria-label="Mercury Farm cihazları" aria-describedby="config-farm-help"></div>
+              <p class="field-help" id="config-farm-help"></p>
+            </div>
+            <div class="field" data-for="mobile">
               <label for="config-device-wait">Boş cihaz bekleme süresi (dakika)</label>
               <input id="config-device-wait" type="number" min="1" max="1440" step="1" inputmode="numeric">
               <p class="field-help">Gereken cihazlar doluysa koşum sırada bekler; bu süre dolarsa başarısız sayılır. Örn. smoke için 5, gece regresyonu için 120.</p>
@@ -323,7 +368,7 @@
               </div>
             </div>
             <div id="config-account-filters" class="grid-2"></div>
-            <p class="field-help">Her paralel hat ayrı bir test kullanıcısı alır; kullanıcı alındığı anda kilitlenir, iki hat aynı hesabı kullanmaz. YAML'da <code>{{account.email}}</code>, <code>{{account.password}}</code>, <code>{{account.phone}}</code> ile kullanılır.</p>
+            <p class="field-help" data-i18n-html="configAccountHelp">Her paralel hat ayrı bir test kullanıcısı alır; kullanıcı alındığı anda kilitlenir, iki hat aynı hesabı kullanmaz. YAML'da <code>{{account.email}}</code>, <code>{{account.password}}</code>, <code>{{account.phone}}</code> ile kullanılır.</p>
             <p id="config-account-credentials" class="notice" hidden></p>
           </fieldset>
 
@@ -339,7 +384,39 @@
                 <input id="config-case-tags" placeholder="regression, login">
               </div>
             </div>
-            <p class="field-help">Case ID girilirse önceliklidir. Boşsa etiketler, ikisi de boşsa client'ın tüm YAML case'leri seçilir.</p>
+            <p class="field-help">Case ID girilirse önceliklidir. Boşsa etiketler, ikisi de boşsa projenin tüm YAML case'leri seçilir.</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>Zamanlama</legend>
+            <div class="check-row">
+              <label><input id="config-schedule-enabled" type="checkbox"> Belirli aralıklarla otomatik koş</label>
+            </div>
+            <div class="grid-2" id="config-schedule-fields">
+              <div class="field">
+                <label for="config-schedule-every">Sıklık</label>
+                <select id="config-schedule-every">
+                  <option value="1">Her gün</option>
+                  <option value="2">2 günde bir</option>
+                  <option value="3">3 günde bir</option>
+                  <option value="4">4 günde bir</option>
+                  <option value="5">5 günde bir</option>
+                  <option value="6">6 günde bir</option>
+                  <option value="7">Haftada bir</option>
+                  <option value="14">2 haftada bir</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="config-schedule-time">Saat</label>
+                <input id="config-schedule-time" type="time" step="60">
+              </div>
+              <div class="field">
+                <label for="config-schedule-start">İlk gün</label>
+                <input id="config-schedule-start" type="date">
+                <p class="field-help">Aralık bu günden itibaren sayılır.</p>
+              </div>
+            </div>
+            <p class="field-help" id="config-schedule-help"></p>
           </fieldset>
 
           <p id="config-form-result" class="notice" hidden></p>
@@ -370,7 +447,7 @@
               <div class="field">
                 <label for="src-scope">Kapsam</label>
                 <select id="src-scope"></select>
-                <p class="field-help">“Tüm client'lar” seçilirse her projenin konfigürasyonu bu kaynağı kullanabilir.</p>
+                <p class="field-help">“Tüm projeler” seçilirse her projenin konfigürasyonu bu kaynağı kullanabilir.</p>
               </div>
             </div>
             <div class="grid-2">
@@ -435,7 +512,7 @@
             <div class="field" data-auth="login">
               <label for="src-auth-body">Giriş isteği gövdesi (JSON)</label>
               <textarea id="src-auth-body" rows="3" spellcheck="false" placeholder='{"email": "{{username}}", "password": "{{password}}"}'></textarea>
-              <p class="field-help"><code>{{username}}</code> ve <code>{{password}}</code> yukarıdaki servis giriş bilgileriyle değişir.</p>
+              <p class="field-help" data-i18n-html="sourceAuthBodyHelp"><code>{{username}}</code> ve <code>{{password}}</code> yukarıdaki servis giriş bilgileriyle değişir.</p>
             </div>
             <div class="grid-2" data-auth="login header">
               <div class="field">
@@ -467,7 +544,7 @@
             <div class="field">
               <label for="src-list-params">Filtre parametreleri (JSON)</label>
               <textarea id="src-list-params" rows="3" spellcheck="false" placeholder='{"environment": "test", "isLocked": false, "userPackage": "FULL"}'></textarea>
-              <p class="field-help">GET'te sorgu parametresi, diğerlerinde istek gövdesi olur. <code>environment</code> konfigürasyonun ortamıyla değişir; buradaki diğer alanlar (is… hariç) her konfigürasyonda ayrıca filtrelenebilir.</p>
+              <p class="field-help" data-i18n-html="sourceListParamsHelp">GET'te sorgu parametresi, diğerlerinde istek gövdesi olur. <code>environment</code> konfigürasyonun ortamıyla değişir; buradaki diğer alanlar (is… hariç) her konfigürasyonda ayrıca filtrelenebilir.</p>
             </div>
             <div class="grid-2">
               <div class="field"><label for="src-f-email">Kullanıcı adı / e-posta alanı</label><input id="src-f-email" placeholder="email"></div>
@@ -478,7 +555,7 @@
             <div class="field">
               <label for="src-extras">Ek alanlar (opsiyonel)</label>
               <textarea id="src-extras" rows="2" spellcheck="false" placeholder="pin=profile.pin&#10;country=countryCode"></textarea>
-              <p class="field-help">Her satır <code>ad=yanıttaki alan</code>. YAML'da <code>{{account.ad}}</code> olarak kullanılır. Nokta ile iç alanlara inilir.</p>
+              <p class="field-help" data-i18n-html="sourceExtrasHelp">Her satır <code>ad=yanıttaki alan</code>. YAML'da <code>{{account.ad}}</code> olarak kullanılır. Nokta ile iç alanlara inilir.</p>
             </div>
           </fieldset>
 
@@ -494,7 +571,7 @@
             <div class="field">
               <label for="src-mark-body">Gövde (JSON)</label>
               <textarea id="src-mark-body" rows="2" spellcheck="false" placeholder='{"isLocked": true}'></textarea>
-              <p class="field-help">Hesap alındığı anda gönderilir; başka koşum aynı kullanıcıyı almaz. <code>{{id}}</code> ve <code>{{email}}</code> kullanılabilir.</p>
+              <p class="field-help" data-i18n-html="sourceMarkBodyHelp">Hesap alındığı anda gönderilir; başka koşum aynı kullanıcıyı almaz. <code>{{id}}</code> ve <code>{{email}}</code> kullanılabilir.</p>
             </div>
           </fieldset>
 
@@ -527,6 +604,7 @@
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/i18n.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

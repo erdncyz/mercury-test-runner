@@ -14,6 +14,7 @@ RUN apt-get update \
 COPY src ./src
 COPY public ./public
 COPY cases ./cases
+COPY skills ./skills
 COPY scripts ./scripts
 # The ADB key must survive container updates, otherwise the farm stops trusting this runner.
 RUN ln -s /data/android /root/.android

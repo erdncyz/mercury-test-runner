@@ -199,7 +199,7 @@ export function normalizeSourceInput(body = {}) {
   if (!name) throw new Error("Kaynak adı zorunlu");
   const type = SOURCE_TYPES.includes(body.type) ? body.type : "http";
   const scope = body.clientId === null || body.clientId === undefined || body.clientId === "" ? null : Number(body.clientId);
-  if (scope !== null && !Number.isInteger(scope)) throw new Error("Geçersiz client");
+  if (scope !== null && !Number.isInteger(scope)) throw new Error("Geçersiz proje");
   const credentials = body.credentials || {};
   const result = {
     name,
@@ -342,12 +342,12 @@ export function createAccountStore({ db, key, fetchImpl = fetch }) {
   }
 
   function assertScope(input, id) {
-    if (input.clientId !== null && !db.prepare("SELECT id FROM clients WHERE id = ?").get(input.clientId)) throw new Error("Client bulunamadı");
+    if (input.clientId !== null && !db.prepare("SELECT id FROM clients WHERE id = ?").get(input.clientId)) throw new Error("Proje bulunamadı");
     const clash = db.prepare("SELECT id FROM sources WHERE lower(name) = lower(?) AND client_id IS ? AND id IS NOT ?").get(input.name, input.clientId, id);
     if (clash) throw new Error(`Bu kapsamda "${input.name}" adlı kaynak zaten var`);
     if (id && input.clientId !== null) {
       const outside = db.prepare("SELECT configs.name FROM configs WHERE account_source_id = ? AND client_id != ?").all(id, input.clientId);
-      if (outside.length) throw new Error(`Başka client'lardaki konfigürasyonlar bu kaynağı kullanıyor: ${outside.map((item) => item.name).join(", ")}`);
+      if (outside.length) throw new Error(`Başka projelerdeki konfigürasyonlar bu kaynağı kullanıyor: ${outside.map((item) => item.name).join(", ")}`);
     }
   }
 

@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { createServer } from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { addRun } from "../src/integrations.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "mtr-"));
 const port = 18080 + Math.floor(Math.random() * 1000);
@@ -35,6 +38,67 @@ async function login(email, password) {
 }
 
 after(() => child.kill());
+
+test("chat'te yazılan senaryo ön kontrolden geçip adımlarıyla koşum açar; kayıtlı koşum komutları değişmez", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const post = (message) => fetch(`${base}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie: admin.cookie }, body: JSON.stringify({ message }),
+  }).then((response) => response.json());
+  const steps = (run) => run.cases[0].steps.map((step) => [step.action, step.text]);
+
+  const adhoc = await post("https://example.com'u aç, More information'a tıkla ve IANA yazdığını doğrula");
+  const run = adhoc.runs[0];
+  assert.match(adhoc.reply, /Senaryo ön kontrolü geçemedi/);
+  assert.deepEqual([run.client_name, run.config_name, run.platform, run.scenario, run.status],
+    ["Anlık senaryo", "https://example.com'u aç, More information'a tıkla ve IANA yazdığını doğrula · Web", "web", true, "blocked"], "koşum senaryonun adını taşır");
+  assert.match(run.message, /Midscene modeli hazır değil/, "senaryo da aynı ön kontrolden geçer");
+  assert.equal(run.testrail_run_id, "");
+  assert.deepEqual(steps(run), [["launch", "https://example.com"], ["aiAct", "More information'a tıkla"], ["aiAssert", "IANA yazdığını doğrula"]]);
+  const detail = await (await fetch(`${base}/api/runs/${run.id}`, { headers: { cookie: admin.cookie } })).json();
+  assert.deepEqual(steps(detail), steps(run), "koşum ayrıntısı senaryonun adımlarını gösterir");
+  assert.equal(detail.scenario_json, undefined);
+
+  const onProject = (await post("Örnek Proje web chrome'da More information'a tıkla")).runs[0];
+  assert.deepEqual([onProject.client_name, onProject.config_name], ["Örnek Proje", "Örnek Proje web chrome'da More information'a tıkla · Web (Chrome)"]);
+  assert.deepEqual(steps(onProject), [["launch", "https://example.com"], ["aiAct", "More information'a tıkla"]], "adres konfigürasyondan gelir");
+
+  assert.match((await post("Örnek Proje'de giriş yap")).reply, /hangi konfigürasyonda koşayım\? Web \(Chrome\), Android, iOS/);
+  assert.match((await post("profil sayfasını aç")).reply, /nerede koşayım/);
+  const saved = await post("Örnek Proje web chrome koş");
+  assert.equal(saved.runs[0].config_name, "Web (Chrome)", "kayıtlı konfigürasyon komutu senaryoya dönmez");
+  assert.equal(saved.runs[0].scenario, false);
+
+  const pinned = (await post("com.demo.app uygulamasını iPhone'da aç, 00008140-001E21220240801C cihazında giriş yap")).runs[0];
+  assert.equal(pinned.platform, "ios");
+  const stored = new DatabaseSync(join(dir, "mercury.sqlite")).prepare("SELECT device_serials, device_hint FROM runs WHERE id = ?").get(pinned.id);
+  assert.deepEqual([JSON.parse(stored.device_serials), stored.device_hint], [["00008140-001E21220240801C"], ""], "UDID koşumu o cihaza sabitler");
+});
+
+test("adım ekranları önbelleklenir, canlı rapor her istekte tazedir, MP4 parça parça sunulur; hepsi oturum ister", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const folder = join(dir, "reports", "9001");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "shot-41-1.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+  writeFileSync(join(folder, "midscene-41.html"), "<html>canlı</html>");
+  writeFileSync(join(folder, "video-41-1.mp4"), Buffer.alloc(300, 1));
+  writeFileSync(join(folder, ".midscene-41.html.tmp"), "yarım");
+  const get = (name, headers = {}) => fetch(`${base}/reports/9001/${name}`, { headers: { cookie: admin.cookie, ...headers } });
+
+  const shot = await get("shot-41-1.jpg");
+  assert.equal(shot.status, 200);
+  assert.equal(shot.headers.get("content-type"), "image/jpeg");
+  assert.match(shot.headers.get("cache-control"), /immutable/, "kart her yenilendiğinde görüntü baştan inmez");
+  const live = await get("midscene-41.html");
+  assert.equal(live.headers.get("cache-control"), "private, no-store", "koşum sürerken büyüyen rapor önbelleğe alınmaz");
+  const clip = await get("video-41-1.mp4", { range: "bytes=0-99" });
+  assert.equal(clip.status, 206);
+  assert.equal(clip.headers.get("content-type"), "video/mp4");
+  assert.equal((await clip.arrayBuffer()).byteLength, 100);
+  assert.equal((await get(".midscene-41.html.tmp")).status, 404, "yarım yazılmış geçici dosya sunulmaz");
+  assert.equal((await fetch(`${base}/reports/9001/shot-41-1.jpg`)).status, 401, "ekran görüntüsü oturumsuz açılmaz");
+});
 
 test("admin girer, kayıt onaysız kalır, chat koşum ve bellek çalışır", async () => {
   await ready();
@@ -154,6 +218,16 @@ test("chat geçmişi kullanıcıya özeldir, aranır ve koşum adımlarını ta�
   assert.deepEqual(JSON.parse(saved.account_filters), { plan: "basic" });
   assert.equal((await json(`/api/configs/${saved.id}`, "PUT", { parallel: 99 })).status, 400);
   assert.equal(listed.find((item) => item.client_name === "Yeni Client").parallel, 3);
+  const moved = await json(`/api/configs/${saved.id}`, "PUT", {
+    client: "Yeni Proje", suiteId: "88", name: "Android Paralel", platform: "android",
+    packageId: "com.demo", parallel: 2, deviceSerials: ["UDID-1", "UDID-2"], accountPolicy: "none",
+  });
+  assert.equal(moved.status, 200);
+  const movedConfig = (await (await fetch(`${base}/api/configs`, { headers: { cookie: admin.cookie } })).json()).find((item) => item.id === saved.id);
+  assert.equal(movedConfig.client_name, "Yeni Proje");
+  assert.equal((await (await fetch(`${base}/api/config-options`, { headers: { cookie: admin.cookie } })).json()).clients.find((item) => item.name === "Yeni Proje").suite_id, "88");
+  assert.equal((await json(`/api/configs/${saved.id}`, "DELETE")).status, 200);
+  assert.ok(!(await (await fetch(`${base}/api/configs`, { headers: { cookie: admin.cookie } })).json()).some((item) => item.id === saved.id));
   const updatedWeb = updated.find((item) => item.id === web.id);
   assert.equal(updatedWeb.plan.caseCount, 1, "etiketle seçilen örnek case");
   assert.equal(updatedWeb.plan.ready, false);
@@ -179,9 +253,46 @@ test("chat geçmişi kullanıcıya özeldir, aranır ve koşum adımlarını ta�
   assert.equal((await fetch(`${base}/api/sources/templates`, { headers: { cookie: user.cookie } })).status, 403);
   assert.equal((await fetch(`${base}/api/sources/test`, { method: "POST", headers: { cookie: user.cookie } })).status, 403);
   assert.equal((await history("")).status, 401);
+
+  const remove = (cookie, path = "") => fetch(`${base}/api/chat/history${path}`, { method: "DELETE", headers: { cookie } });
+  await post(user.cookie, "kendi mesajım");
+  const adminTurns = await (await history(admin.cookie)).json();
+  const firstTurn = adminTurns[0].turn;
+  assert.equal((await remove(user.cookie, `/${firstTurn}`)).status, 404, "başkasının konuşması silinemez");
+  assert.equal((await remove(admin.cookie, `/${firstTurn}`)).status, 200);
+  const remaining = await (await history(admin.cookie)).json();
+  assert.ok(!remaining.some((item) => item.turn === firstTurn), "konuşmanın iki mesajı birlikte silinir");
+  assert.equal(remaining.length, adminTurns.length - 2);
+  const runsBefore = (await (await fetch(`${base}/api/runs`, { headers: { cookie: admin.cookie } })).json()).length;
+  assert.equal((await (await remove(admin.cookie)).json()).removed, remaining.length);
+  assert.deepEqual(await (await history(admin.cookie)).json(), []);
+  assert.equal((await (await fetch(`${base}/api/runs`, { headers: { cookie: admin.cookie } })).json()).length, runsBefore, "koşumlar silinmez");
+  assert.equal((await (await history(user.cookie)).json()).length, 2, "diğer kullanıcının geçmişi korunur");
+
+  const say = (cookie, message, conversationId) => fetch(`${base}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message, conversationId }),
+  }).then((response) => response.json());
+  const userTexts = (messages) => messages.filter((item) => item.role === "user").map((item) => item.text);
+  const first = await say(admin.cookie, "ilk soru");
+  assert.ok(first.conversationId);
+  assert.equal((await say(admin.cookie, "devam sorusu", first.conversationId)).conversationId, first.conversationId, "aynı konuşmaya eklenir");
+  const topic = await say(admin.cookie, "yeni konu");
+  assert.notEqual(topic.conversationId, first.conversationId, "konuşma kimliği yoksa yeni konuşma başlar");
+  await say(admin.cookie, "eski konuya dönüş", first.conversationId);
+  const grouped = await (await history(admin.cookie)).json();
+  assert.deepEqual([...new Set(grouped.map((item) => item.conversation_id))], [topic.conversationId, first.conversationId], "son hareket eden konuşma en sonda");
+  const opened = await (await fetch(`${base}/api/chat/history/${first.conversationId}`, { headers: { cookie: admin.cookie } })).json();
+  assert.deepEqual(userTexts(opened), ["ilk soru", "devam sorusu", "eski konuya dönüş"]);
+  assert.equal(opened.filter((item) => item.role === "assistant").length, 3);
+  assert.deepEqual(userTexts(await (await history(admin.cookie, "DEVAM SORUSU")).json()), ["ilk soru", "devam sorusu", "eski konuya dönüş"], "arama konuşmanın tamamını getirir");
+  assert.equal((await fetch(`${base}/api/chat/history/${first.conversationId}`, { headers: { cookie: user.cookie } })).status, 404, "başkasının konuşması açılamaz");
+  assert.notEqual((await say(user.cookie, "araya girme", first.conversationId)).conversationId, first.conversationId, "başkasının konuşmasına yazılamaz");
+  assert.deepEqual(userTexts(await (await fetch(`${base}/api/chat/history/${first.conversationId}`, { headers: { cookie: admin.cookie } })).json()).length, 3);
+  assert.equal((await remove(admin.cookie, `/${first.conversationId}`)).status, 200);
+  assert.deepEqual(userTexts(await (await history(admin.cookie)).json()), ["yeni konu"], "silme konuşmanın tüm mesajlarını kaldırır");
 });
 
-test("hesap kaynağı her projeye göre tanımlanır: ortak liste başka client'ta kullanılır, silme korunur", async () => {
+test("hesap kaynağı her projeye göre tanımlanır: ortak liste başka projede kullanılır, silme korunur", async () => {
   await ready();
   const admin = await login("mercury@test.com", "Mercury");
   const call = (path, method = "GET", body) => fetch(`${base}${path}`, {
@@ -217,4 +328,169 @@ test("hesap kaynağı her projeye göre tanımlanır: ortak liste başka client'
   assert.equal(narrowed.status, 400, "kullanan başka client varken kapsam daraltılamaz");
   await call(`/api/configs/${acme.id}`, "PUT", { accountPolicy: "none", accountSourceId: null });
   assert.equal((await call(`/api/sources/${sourceId}`, "DELETE")).status, 200);
+});
+
+test("TestRail bağlanınca tüm projelerin suite'leri listelenir, suite seçilince proje TestRail projesiyle eklenir", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const call = (path, method = "GET", body) => fetch(`${base}${path}`, {
+    method, headers: { "content-type": "application/json", cookie: admin.cookie }, body: body ? JSON.stringify(body) : undefined,
+  });
+  const runsOpened = [];
+  const fake = createServer(async (req, res) => {
+    const auth = Buffer.from(String(req.headers.authorization || "").replace(/^Basic /, ""), "base64").toString();
+    const path = decodeURIComponent(req.url.split("?")[1] || "");
+    const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (auth !== "qa@acme.io:tr-key") return reply(401, { error: "Authentication failed" });
+    if (path.startsWith("/api/v2/get_projects") && !path.includes("offset=")) {
+      return reply(200, { offset: 0, size: 1, _links: { next: "/api/v2/get_projects&is_completed=0&limit=1&offset=1" }, projects: [{ id: 3, name: "Mobil", suite_mode: 1 }] });
+    }
+    if (path.startsWith("/api/v2/get_projects")) return reply(200, { offset: 1, size: 1, _links: { next: null }, projects: [{ id: 5, name: "Web", suite_mode: 3 }] });
+    if (path === "/api/v2/get_suites/3") return reply(200, [{ id: 31, name: "Master" }]);
+    if (path === "/api/v2/get_suites/5") return reply(200, [{ id: 51, name: "Giriş" }, { id: 52, name: "Sepet" }, { id: 53, name: "Eski", is_completed: true }]);
+    const run = path.match(/^\/api\/v2\/add_run\/(\d+)$/);
+    if (run && req.method === "POST") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      runsOpened.push({ project: run[1], ...JSON.parse(Buffer.concat(chunks).toString()) });
+      return reply(200, { id: 700 + runsOpened.length });
+    }
+    return reply(404, { error: "unknown" });
+  });
+  await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+  const host = `http://127.0.0.1:${fake.address().port}/`;
+  try {
+    assert.match((await (await call("/api/settings/testrail-suites")).json()).reason, /eksik/);
+    await call("/api/settings", "PUT", { testrail_host: host, testrail_user: "qa@acme.io", testrail_api_key: "wrong" });
+    const denied = await call("/api/settings/testrail-test", "POST");
+    assert.equal(denied.status, 400);
+    assert.match((await denied.json()).error, /401/);
+
+    await call("/api/settings", "PUT", { testrail_api_key: "tr-key" });
+    const tested = await (await call("/api/settings/testrail-test", "POST")).json();
+    assert.deepEqual(tested.projects, [{ id: "3", name: "Mobil", suiteMode: 1 }, { id: "5", name: "Web", suiteMode: 3 }], "sayfalı yanıtın tüm sayfaları okunur");
+    assert.deepEqual((await (await call("/api/settings/testrail-projects")).json()).projects.map((item) => item.id), ["3", "5"]);
+
+    const all = (await (await call("/api/settings/testrail-suites")).json()).suites;
+    assert.deepEqual(all.map((item) => [item.project_id, item.id, item.name]), [["3", "31", "Master"], ["5", "51", "Giriş"], ["5", "52", "Sepet"]],
+      "Tüm projeler seçiliyken her projenin açık suite'leri gelir");
+    assert.equal(all[0].project_name, "Mobil");
+    assert.equal(all[0].suite_mode, 1);
+
+    await call("/api/settings", "PUT", { testrail_project_id: "5" });
+    const scoped = (await (await call("/api/settings/testrail-suites")).json()).suites;
+    assert.deepEqual(scoped.map((item) => item.id), ["51", "52"], "tek proje seçilince yalnız onun suite'leri gelir");
+    await call("/api/settings", "PUT", { testrail_project_id: "99" });
+    assert.match((await (await call("/api/settings/testrail-suites")).json()).reason, /#99/);
+    await call("/api/settings", "PUT", { testrail_project_id: "" });
+
+    const created = await call("/api/configs", "POST", { client: "Mobil", suiteId: "31", projectId: "3", name: "Mobil Web", platform: "web", launchUrl: "https://acme.io" });
+    assert.equal(created.status, 201);
+    const project = (await (await call("/api/config-options")).json()).clients.find((item) => item.name === "Mobil");
+    assert.deepEqual([project.suite_id, project.project_id], ["31", "3"], "suite ve TestRail projesi Mercury projesine yazılır");
+    const config = (await (await call("/api/configs")).json()).find((item) => item.client_name === "Mobil");
+    assert.equal(config.testrail_project_id, "3");
+    const after = (await (await call("/api/settings/testrail-suites")).json()).suites;
+    assert.equal(after.find((item) => item.id === "31").client_id, project.id, "eklenen suite projeye bağlı görünür");
+    assert.equal(after.find((item) => item.id === "51").client_id, null);
+
+    const clash = await call("/api/configs", "POST", { client: "Mobil", suiteId: "51", projectId: "5", name: "Başka", platform: "web" });
+    assert.equal(clash.status, 400, "aynı adlı proje başka bir suite'i yutmaz");
+    assert.match((await clash.json()).error, /başka bir TestRail suite/);
+
+    const settingsFor = { testrail_host: host, testrail_user: "qa@acme.io", testrail_api_key: "tr-key", testrail_project_id: "5" };
+    await addRun(settingsFor, { projectId: "3", suiteId: "31", name: "r1", caseIds: [1] });
+    await addRun(settingsFor, { suiteId: "51", name: "r2", caseIds: [2] });
+    assert.deepEqual(runsOpened.map((item) => [item.project, item.suite_id]), [["3", 31], ["5", 51]], "run projenin TestRail projesinde, yoksa varsayılanda açılır");
+    assert.equal((await call(`/api/configs/${(await created.json()).id}`, "DELETE")).status, 200);
+  } finally {
+    await call("/api/settings", "PUT", { testrail_host: "", testrail_user: "", testrail_api_key: "", testrail_project_id: "" });
+    fake.close();
+  }
+});
+
+test("koşum silinir: admin hepsini, kullanıcı yalnız kendisininkini; aktif koşum korunur, rapor ve chat bağlantısı kalkar", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const call = (cookie, path, method = "GET", body) => fetch(`${base}${path}`, {
+    method, headers: { "content-type": "application/json", cookie }, body: body ? JSON.stringify(body) : undefined,
+  });
+  await call("", "/api/auth/register", "POST", { email: "runner@example.com", password: "password1" });
+  const users = await (await call(admin.cookie, "/api/users")).json();
+  await call(admin.cookie, `/api/users/${users.find((item) => item.email === "runner@example.com").id}/approve`, "POST", { role: "user" });
+  const user = await login("runner@example.com", "password1");
+  const start = async (cookie) => (await (await call(cookie, "/api/chat", "POST", { message: "Örnek Proje web chrome koş" })).json()).runs[0];
+
+  const adminRun = await start(admin.cookie);
+  const userRun = await start(user.cookie);
+  const listed = await (await call(user.cookie, "/api/runs")).json();
+  assert.equal(listed.find((item) => item.id === adminRun.id).can_delete, false);
+  assert.equal(listed.find((item) => item.id === userRun.id).can_delete, true);
+  assert.equal(listed[0].started_by, undefined, "kullanıcı kimliği listede dönmez");
+  assert.equal((await call(user.cookie, `/api/runs/${adminRun.id}`, "DELETE")).status, 403, "başkasının koşumu silinemez");
+
+  const folder = join(dir, "reports", String(userRun.id));
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "index.html"), "<html>rapor</html>");
+  assert.equal((await call(user.cookie, `/api/runs/${userRun.id}`, "DELETE")).status, 200);
+  assert.equal((await call(user.cookie, `/api/runs/${userRun.id}`)).status, 404);
+  assert.equal(existsSync(folder), false, "yerel rapor da silinir");
+  assert.equal((await call(user.cookie, `/api/runs/${userRun.id}`, "DELETE")).status, 404);
+  const turn = (await (await call(user.cookie, "/api/chat/history")).json()).find((item) => item.role === "assistant");
+  assert.deepEqual(turn.runs, [], "chat geçmişi silinen koşumu göstermez");
+
+  const db = new DatabaseSync(join(dir, "mercury.sqlite"));
+  db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(adminRun.id);
+  assert.equal((await call(admin.cookie, `/api/runs/${adminRun.id}`, "DELETE")).status, 409, "çalışan koşum silinmez");
+  db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(adminRun.id);
+  db.close();
+  assert.equal((await call(admin.cookie, `/api/runs/${adminRun.id}`, "DELETE")).status, 200, "admin herkesin koşumunu siler");
+});
+
+test("koşum listesi her koşumun case sayılarını durumlarına göre döndürür", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const call = (path) => fetch(`${base}${path}`, { headers: { cookie: admin.cookie } }).then((response) => response.json());
+  const run = (await (await fetch(`${base}/api/chat`, {
+    method: "POST", headers: { "content-type": "application/json", cookie: admin.cookie }, body: JSON.stringify({ message: "Örnek Proje web chrome koş" }),
+  })).json()).runs[0];
+  const empty = (await call("/api/runs")).find((item) => item.id === run.id);
+  assert.deepEqual(empty.case_counts, { total: 0, passed: 0, failed: 0, blocked: 0, running: 0 });
+
+  const db = new DatabaseSync(join(dir, "mercury.sqlite"));
+  const insert = db.prepare("INSERT INTO run_cases (run_id, case_key, title, status) VALUES (?, ?, ?, ?)");
+  ["passed", "passed", "passed", "failed", "blocked", "running"].forEach((status, index) => insert.run(run.id, String(index), `Case ${index}`, status));
+  db.close();
+  const listed = (await call("/api/runs")).find((item) => item.id === run.id);
+  assert.deepEqual(listed.case_counts, { total: 6, passed: 3, failed: 1, blocked: 1, running: 1 });
+});
+
+test("QA becerileri: admin listeler, özel beceri ekler, yerleşiği ezer ve siler; user erişemez", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const call = (cookie, path, method = "GET", body) => fetch(`${base}${path}`, {
+    method, headers: { "content-type": "application/json", cookie }, body: body ? JSON.stringify(body) : undefined,
+  });
+  await call("", "/api/auth/register", "POST", { email: "skills@example.com", password: "password1" });
+  const users = await (await call(admin.cookie, "/api/users")).json();
+  await call(admin.cookie, `/api/users/${users.find((item) => item.email === "skills@example.com").id}/approve`, "POST", { role: "user" });
+  const user = await login("skills@example.com", "password1");
+
+  const listed = await (await call(admin.cookie, "/api/skills")).json();
+  const core = listed.find((skill) => skill.id === "qa-core");
+  assert.deepEqual([core.source, core.always, core.overrides], ["builtin", true, false]);
+  assert.match(core.text, /^---\nname: QA çekirdeği/);
+  assert.equal((await call(user.cookie, "/api/skills")).status, 403);
+  assert.equal((await call(user.cookie, "/api/skills/proje", "PUT", { text: "---\ntriggers: x\n---\ny" })).status, 403);
+
+  assert.equal((await call(admin.cookie, "/api/skills/..%2Fetc", "PUT", { text: "---\ntriggers: x\n---\ny" })).status, 400, "dosya yolu kaçışı reddedilir");
+  assert.equal((await call(admin.cookie, "/api/skills/proje", "PUT", { text: "tetikleyicisiz metin" })).status, 400, "seçilemeyecek beceri kaydedilmez");
+  const saved = await (await call(admin.cookie, "/api/skills/proje-giris", "PUT", { text: "---\nname: Proje girişi\ntriggers: giris\n---\nGiriş Hesabım menüsünde." })).json();
+  assert.deepEqual(saved.find((skill) => skill.id === "proje-giris")?.source, "custom");
+  const overridden = await (await call(admin.cookie, "/api/skills/auth-login", "PUT", { text: "---\nname: Bizim giriş\ntriggers: login\n---\nÖzel." })).json();
+  assert.deepEqual(overridden.filter((skill) => skill.id === "auth-login").map((skill) => [skill.name, skill.overrides]), [["Bizim giriş", true]]);
+  const reverted = await (await call(admin.cookie, "/api/skills/auth-login", "DELETE")).json();
+  assert.equal(reverted.find((skill) => skill.id === "auth-login").source, "builtin", "özel kopya silinince yerleşik geri gelir");
+  assert.equal((await call(admin.cookie, "/api/skills/qa-core", "DELETE")).status, 404, "yerleşik beceri silinmez");
+  assert.equal((await call(admin.cookie, "/api/skills/proje-giris", "DELETE")).status, 200);
 });
