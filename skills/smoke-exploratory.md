@@ -11,7 +11,7 @@ triggers: smoke, duman, genel kontrol, ayakta, calisiyor mu, acilisyor mu, acili
   2. Primary navigation: open the top 3–5 main menu items one by one (one `aiAct` + `aiAssert` pair each, returning via the logo/menu): each opens a page with real content that matches its label.
   3. Key entry points exist and respond: search opens, login entry opens the login form, cart/profile icon responds (do not complete flows).
   4. Footer: a couple of footer links (e.g. "Hakkımızda", "İletişim", "Yardım") open non-empty pages.
-- **Exploratory / "siteyi test et"**: up to 5 cases on the highest-value areas visible on the home page (search, a listing → detail page, login entry, a primary form). Depth over breadth: fewer areas with real oracles beat many shallow clicks.
+- **Exploratory / "siteyi test et"**: one case per high-value area visible on the home page (search, a listing → detail page, login entry, a primary form). Depth over breadth: fewer areas with real oracles beat many shallow clicks.
 - **Saved regression**: if the tester says "regresyon" or names TestRail suites/cases, prefer `run_suite` over designing new cases.
 
 ## Per-page checklist (turn into asserts where relevant)

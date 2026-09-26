@@ -105,7 +105,7 @@ const STEP_LABEL = { passed: "geçti", failed: "başarısız", skipped: "atland�
 
 function reportHtml({ run, cases, note, midscene }) {
   const blocks = cases.map((item) => {
-    const steps = (item.steps || []).map((step) => `<li class="${escapeHtml(step.status)}"><code>${escapeHtml(step.action)}</code> ${escapeHtml(step.text)} <em>${escapeHtml(STEP_LABEL[step.status] || step.status)}</em>${step.shot ? ` <a href="${escapeHtml(step.shot)}">ekran</a>` : ""}${step.detail && step.status === "failed" ? `<div class="err">${escapeHtml(step.detail)}</div>` : ""}</li>`).join("");
+    const steps = (item.steps || []).map((step) => `<li class="${escapeHtml(step.status)}"><code>${escapeHtml(step.action)}</code> ${escapeHtml(step.text)} <em>${escapeHtml(STEP_LABEL[step.status] || step.status)}</em>${step.shot ? ` <a href="${escapeHtml(`${step.shot}?v=${encodeURIComponent(run.created_at || "")}`)}">ekran</a>` : ""}${step.detail && step.status === "failed" ? `<div class="err">${escapeHtml(step.detail)}</div>` : ""}</li>`).join("");
     const links = item.files?.report ? `<a href="${escapeHtml(item.files.report)}">Midscene raporu</a>` : "";
     const title = item.caseId ? String(item.title).replace(new RegExp(`^C?${item.caseId}\\b[\\s:.\\-–—]*`, "i"), "") || item.title : item.title;
     return `<section><h2><code>${escapeHtml(item.caseId ? `C${item.caseId}` : "—")}</code> ${escapeHtml(title)} <em>${escapeHtml(item.status)}</em></h2>${links ? `<p>${links}</p>` : ""}<ol>${steps}</ol></section>`;

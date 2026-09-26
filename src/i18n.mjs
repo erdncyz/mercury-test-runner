@@ -224,6 +224,24 @@ const EN = {
   "TestRail'de #{id} numaralı açık proje yok": "TestRail has no open project #{id}",
   "TestRail projesi #{id} içinde açık suite yok": "TestRail project #{id} has no open suite",
 
+  /* ---------- Jira & Confluence ---------- */
+  "Jira'ya ulaşılamadı ({reason})": "Could not reach Jira ({reason})",
+  "Confluence'a ulaşılamadı ({reason})": "Could not reach Confluence ({reason})",
+  "Jira kimlik bilgilerini reddetti ({status})": "Jira rejected the credentials ({status})",
+  "Confluence kimlik bilgilerini reddetti ({status})": "Confluence rejected the credentials ({status})",
+  "Ayarlar → Jira & Confluence": "Settings → Jira & Confluence",
+  "Jira'da bu kayıt yok ya da hesabın erişimi yok (404)": "Jira has no such issue or the account cannot access it (404)",
+  "Confluence'ta bu sayfa yok ya da hesabın erişimi yok (404)": "Confluence has no such page or the account cannot access it (404)",
+  "Jira yanıtı JSON değil": "Jira response is not JSON",
+  "Confluence yanıtı JSON değil": "Confluence response is not JSON",
+  "Jira ayarı eksik": "Jira settings missing",
+  "Jira ayarı eksik (Ayarlar → Jira & Confluence)": "Jira settings missing (Settings → Jira & Confluence)",
+  "Confluence ayarı eksik (Ayarlar → Jira & Confluence)": "Confluence settings missing (Settings → Jira & Confluence)",
+  "Confluence sayfası {id}": "Confluence page {id}",
+  "Jira/Confluence kaydı okunamadı:": "Could not read the Jira/Confluence item:",
+  "Okunamayan kayıtlar": "Items that could not be read",
+  "{keys} okundu, ama test case çıkarmak için bir model bağlı olmalı (Ayarlar → Model).": "{keys} was read, but a model must be connected to design test cases (Settings → Model).",
+
   /* ---------- Configurations & planning ---------- */
   "Proje seç veya yeni proje adı yaz": "Choose a project or enter a new project name",
   "\"{name}\" adlı proje başka bir TestRail suite'ine ({suite}) bağlı; farklı bir ad seç": "The project \"{name}\" is linked to another TestRail suite ({suite}); choose a different name",

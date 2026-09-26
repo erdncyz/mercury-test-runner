@@ -522,10 +522,12 @@ function causeCallout(cause) {
   );
 }
 
-function stepItem(step, index, runId, previousUrl) {
+// Screenshots are cached as immutable, but a deleted run's id is reused by the next run; `version` (the run's
+// creation time) keeps a new run from showing the old run's cached picture under the same file name.
+function stepItem(step, index, runId, previousUrl, version = "") {
   const status = step.status || "pending";
   const marker = status === "passed" ? icon("check") : status === "failed" ? icon("x") : String(index + 1);
-  const shot = step.shot ? `/reports/${runId}/${encodeURIComponent(step.shot)}` : "";
+  const shot = step.shot ? `/reports/${runId}/${encodeURIComponent(step.shot)}${version ? `?v=${encodeURIComponent(version)}` : ""}` : "";
   return h("li", { class: `step ${status}` },
     h("span", { class: "marker", "aria-hidden": "true" }, marker),
     h("span", { class: "action" }, STEP_ACTION[step.action] || step.action),
@@ -580,7 +582,7 @@ function runCard(run, { expanded = false } = {}) {
         badge(item.status, STATUS_LABEL[item.status] || STEP_STATE[item.status] || item.status),
       ),
       run.status === "running" && steps.length ? h("div", { class: "progress" }, h("span", { style: `width:${Math.round((done / steps.length) * 100)}%` })) : null,
-      steps.length ? h("ol", { class: "steps" }, steps.map((step, position) => stepItem(step, position, run.id, steps[position - 1]?.metrics?.url))) : h("p", { class: "muted small", style: "padding:0 14px 14px" }, "Bu case için adım tanımı yok."),
+      steps.length ? h("ol", { class: "steps" }, steps.map((step, position) => stepItem(step, position, run.id, steps[position - 1]?.metrics?.url, run.created_at))) : h("p", { class: "muted small", style: "padding:0 14px 14px" }, "Bu case için adım tanımı yok."),
     );
     details.addEventListener("toggle", () => (details.open ? openCases.add(key) : openCases.delete(key)));
     return details;
@@ -841,6 +843,11 @@ async function sendChat(message) {
     const node = addMessage("bot", result.reply, result.runs || []);
     // Which QA skills the agent planned with; shown only on the live answer.
     if (result.skills?.length) node.querySelector(".time")?.before(h("div", { class: "msg-skills" }, t("QA becerileri: {skills}", { skills: result.skills.join(" · ") })));
+    // Jira issues / Confluence pages the cases were designed from.
+    if (result.references?.length) {
+      node.querySelector(".time")?.before(h("div", { class: "msg-skills" }, t("Kaynak: "),
+        result.references.flatMap((ref, index) => [index ? " · " : null, h("a", { href: ref.url, target: "_blank", rel: "noopener" }, `${ref.key}${ref.title ? ` ${ref.title}` : ""}`)])));
+    }
   } catch (err) {
     typing.remove();
     addMessage("bot error", err.message);
@@ -1570,7 +1577,7 @@ function paintConfigDialog() {
   ].filter(Boolean);
   const notes = [];
   if (lanes < parallel && !(mobile && serials.length && parallel > serials.length) && caseCount) notes.push(t("{cases} case olduğu için {lanes} hat kullanılır", { cases: caseCount, lanes }));
-  if (limit && lanes > limit) notes.push(t("Bu sunucuda aynı anda en fazla {limit} tarayıcı açılır (Ayarlar → Genel); bu koşum en fazla {lanes} hatla koşar", { limit, lanes: limit }));
+  if (limit && lanes > limit) notes.push(t("Bu sunucuda aynı anda en fazla {limit} tarayıcı açılır; bu koşum en fazla {lanes} hatla koşar", { limit, lanes: limit }));
   $("config-summary").replaceChildren(...[
     h("div", { class: "chips" }, chips.map((chip) => h("span", { class: "chip" }, chip))),
     problems.length ? h("p", { class: "plan-issues" }, problems.join(" · ")) : null,
@@ -1750,6 +1757,21 @@ const SECTIONS = [
     ],
   },
   {
+    id: "atlassian",
+    title: "Jira & Confluence",
+    lead: "Chat'te bir Jira kaydı (PROJ-123 ya da bağlantısı) veya Confluence sayfası verdiğinde Mercury onu okur, kabul kriterlerinden test case çıkarır ve koşar. Yalnız okur; Jira'ya yazmaz.",
+    note: "Jira Cloud: e-posta + API token (id.atlassian.com → Security → API tokens). Server/Data Center: e-postayı boş bırak, kişisel erişim anahtarını (PAT) yaz. Confluence alanları boşsa Jira'nın bilgileri kullanılır; Cloud'da adres <jira>/wiki olur.",
+    test: { path: "/api/settings/atlassian-test", label: "Bağlantıyı dene" },
+    fields: [
+      ["jira_host", "Jira adresi", "url", "https://firma.atlassian.net"],
+      ["jira_user", "Jira e-posta (Cloud)", "email", "", "Server/Data Center'da PAT kullanıyorsan boş bırak."],
+      ["jira_api_token", "Jira API token / PAT", "password"],
+      ["confluence_host", "Confluence adresi (opsiyonel)", "url", "https://firma.atlassian.net/wiki", "Boşsa Jira Cloud adresinin /wiki yolu kullanılır."],
+      ["confluence_user", "Confluence e-posta (opsiyonel)", "email"],
+      ["confluence_api_token", "Confluence API token / PAT (opsiyonel)", "password", "", "Boşsa Jira'nın e-postası ve token'ı kullanılır."],
+    ],
+  },
+  {
     id: "farm",
     title: "Mercury Farm",
     lead: "Android ve iOS testleri yalnız Farm'daki cihazlarda koşar. Midscene cihazı Farm üzerinden sürer; bu sunucuda telefon gerekmez.",
@@ -1758,17 +1780,6 @@ const SECTIONS = [
     fields: [
       ["farm_base_url", "Mercury Farm adresi", "url", "https://farm.firma.local", "Farm arayüzünün kök adresi (/#/ olmadan)."],
       ["farm_token", "Mercury Farm erişim anahtarı", "password", "", "Farm → Settings → Keys → Access Tokens altında oluşturulur."],
-    ],
-  },
-  {
-    id: "general",
-    title: "Genel",
-    lead: "Bu sunucunun kapasitesi ve adresleri. Projeye göre paralellik ve cihaz bekleme süresi her konfigürasyonda ayrıca ayarlanır.",
-    note: "Kaç hatta koşulacağı konfigürasyondan gelir (bir projede 1, diğerinde 4 olabilir). Buradaki sınır, tüm projeler ve kullanıcılar birlikte koşarken bu makinenin kaldırabileceği toplam tarayıcı sayısıdır. Android/iOS için sınır yoktur: Farm'daki boş cihazlar ve konfigürasyondaki UDID havuzu belirler.",
-    fields: [
-      ["web_concurrency", "Bu sunucuda aynı anda açık en fazla tarayıcı", "number", "Otomatik", "Boş bırakılırsa bu makinenin RAM ve işlemcisine göre otomatik hesaplanır (hat başına ~1 GB). Tüm web koşumlarının toplamıdır; dolunca yeni koşumlar sırada bekler ve boşalan hatlar bekleyen kullanıcılar arasında sırayla paylaştırılır. Makine yavaşlarsa daha küçük bir sayı yaz."],
-      ["public_base_url", "Raporların açılacağı dış adres (opsiyonel)", "url", "http://mercury.ofis.local:8080", "TestRail'e yazılan rapor bağlantılarının açılacağı Mercury adresi. Yalnız bu bilgisayarda kullanıyorsan boş bırak."],
-      ["update_manifest_url", "Yeni sürüm kontrol adresi (opsiyonel)", "url", "https://sunucu/mercury-version.json", "Kurumsal güncelleme sunucunuz varsa sürüm JSON adresini yaz. Yoksa boş bırak; testler çalışmaya devam eder."],
     ],
   },
 ];
@@ -1822,7 +1833,7 @@ function settingsCard(section, data) {
     h("div", { class: "card-body" },
       sectionHeader(section.title, section.lead),
       section.note ? h("div", { class: "settings-note" }, icon("check"), h("p", {}, section.note)) : null,
-      h("div", { class: "grid-2" }, section.fields.map(([name, label, type, placeholder, help]) => inputField(name, label, type, data[name], name === "web_concurrency" && data.web_concurrency_auto ? t("Otomatik ({n})", { n: data.web_concurrency_auto }) : placeholder, help))),
+      h("div", { class: "grid-2" }, section.fields.map(([name, label, type, placeholder, help]) => inputField(name, label, type, data[name], placeholder, help))),
     ),
     h("div", { class: "card-foot" },
       result,
@@ -1862,8 +1873,12 @@ function settingsCard(section, data) {
         testrailProjectPicker(form, response.projects);
         projectNote = t(" · {n} TestRail projesi bulundu", { n: response.projects.length });
       }
-      result.className = response.adbKey === "missing" || String(response.adbKey || "").startsWith("failed") ? "result error" : "result ok";
-      result.textContent = t("Bağlantı başarılı") + adbNote + projectNote;
+      const confluenceFailed = String(response.confluence || "").startsWith("failed");
+      const atlassianNote = (response.jiraUser ? t(" · Jira kullanıcısı: {name}", { name: response.jiraUser }) : "")
+        + ({ ok: t(" · Confluence erişilebilir"), missing: t(" · Confluence ayarlı değil") }[response.confluence]
+          ?? (confluenceFailed ? t(" · Confluence: {message}", { message: response.confluence.slice(8) }) : ""));
+      result.className = response.adbKey === "missing" || String(response.adbKey || "").startsWith("failed") || confluenceFailed ? "result error" : "result ok";
+      result.textContent = t("Bağlantı başarılı") + adbNote + projectNote + atlassianNote;
     } catch (err) {
       result.className = "result error";
       result.textContent = err.message;
@@ -2141,11 +2156,8 @@ async function loadSettings() {
     const [data] = await Promise.all([api("/api/settings"), refreshModel()]);
     body.className = "stack-lg settings-body";
     const cards = SECTIONS.map((section) => settingsCard(section, data));
-    const general = SECTIONS.findIndex((section) => section.id === "general");
-    cards.splice(general, 0, sourcesCard(), skillsCard());
-    body.replaceChildren(modelCard(data), ...cards);
-    const titles = SECTIONS.map((section) => [section.id, section.title]);
-    titles.splice(general, 0, ["sources", "Test hesap kaynakları"], ["skills", "QA becerileri"]);
+    body.replaceChildren(modelCard(data), ...cards, sourcesCard(), skillsCard());
+    const titles = [...SECTIONS.map((section) => [section.id, section.title]), ["sources", "Test hesap kaynakları"], ["skills", "QA becerileri"]];
     const links = [["model", "Model"], ...titles].map(([id, title]) => {
       const link = h("a", { href: `#/settings`, "data-target": id }, title);
       link.addEventListener("click", (event) => {

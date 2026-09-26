@@ -113,6 +113,8 @@ test("senaryo hedefi: adres web'dir, paket mobildir, hedef yoksa sorulur; uydurm
   const invented = scenario({ url: "https://example.org/giris", configId: 1 });
   assert.deepEqual([invented.intent, invented.target.launchUrl, invented.target.config], ["scenario", "https://example.org/giris", null], "yazılı adreste uydurma konfigürasyon yok sayılır");
   assert.equal(scenario({ url: "https://example.org", configId: "null" }).target.config, null);
+  const many = normalizeDecision({ intent: "scenario", scenario: { url: "https://example.org", cases: Array.from({ length: 12 }, (_, index) => ({ title: `Case ${index + 1}`, steps: [{ action: "aiAssert", text: "Sayfa açıldı" }] })) } }, catalog);
+  assert.equal(many.cases.length, 12, "case sayısı sınırlanmaz; özelliğin ihtiyacı kadar case koşar");
 });
 
 test("QA ajanı Midscene'ın modeline OpenAI uyumlu istekle katalog ve sohbetle sorar", async () => {
@@ -140,6 +142,13 @@ test("QA ajanı Midscene'ın modeline OpenAI uyumlu istekle katalog ve sohbetle 
   assert.equal(sent.message, "neden düştü?");
   assert.equal(sent.catalog.length, 2);
   assert.equal(sent.conversation[1].runs[0].status, "failed");
+  assert.equal("references" in sent, false, "Jira/Confluence kaydı yoksa alan gönderilmez");
+
+  const references = [{ kind: "jira", key: "PROJ-7", url: "https://jira.example.com/browse/PROJ-7", title: "Şifre sıfırlama", text: "Kabul kriterleri: ..." }];
+  await askQaAgent({ settings, text: "bu task için test case çıkar ve koş", catalog, references, fetchImpl });
+  const withRefs = JSON.parse(calls.at(-1).options.body);
+  assert.deepEqual(JSON.parse(withRefs.messages[1].content).references, references, "okunan kayıtlar modele gider");
+  assert.match(withRefs.messages[0].content, /Requirements from Jira \/ Confluence/);
 
   const failing = async () => new Response(JSON.stringify({ error: { message: "Invalid API key" } }), { status: 401 });
   await assert.rejects(askQaAgent({ settings, text: "x", catalog, fetchImpl: failing }), /401.*Invalid API key/);

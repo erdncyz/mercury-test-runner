@@ -10,6 +10,7 @@ import {
   resolveConfigs, resolveScenarioTarget, serialCandidates, wantsRun,
 } from "./agent.mjs";
 import { addPlan, addRun, ensureScenarioCases, farmRequest, listProjectSuites, listProjects, testrailConfigured } from "./integrations.mjs";
+import { gatherReferences, testAtlassian } from "./atlassian.mjs";
 import { createAccountStore, normalizeSourceInput, normalizeSpec } from "./accounts.mjs";
 import { createWorker, listCases, scenarioCases } from "./worker.mjs";
 import { askQaAgent, conversationContext, normalizeDecision, qaCatalog, usesAccount } from "./qa-agent.mjs";
@@ -630,25 +631,51 @@ async function handleChat(user, message, conversationId = null, lang = DEFAULT_L
   if (isPlainRunCommand(text, configs, clients, memories)) return runConfigs(user, text, clients);
   // Everything else goes to the QA agent when a model is connected; if it cannot plan, the rules below still answer.
   const current = settings();
+  const history = conversationId ? chatConversation(user.id, Number(conversationId)) : [];
+  const recent = history.filter((item) => item.role === "user").slice(-3).reverse().map((item) => item.text);
+  // Jira issues / Confluence pages named in the sentence (or, for "bu task", earlier in the chat) are read first.
+  const { references, errors: referenceErrors } = await gatherReferences(current, text, recent);
+  if (references.length || referenceErrors.length) {
+    audit(db, user.email, "atlassian_read", [...references.map((item) => `${item.kind}:${item.key}`), ...referenceErrors.map((item) => `hata:${item.split(":")[0]}`)].join(", "));
+  }
+  if (referenceErrors.length && !references.length) {
+    return { reply: `Jira/Confluence kaydı okunamadı:\n${referenceErrors.join("\n")}` };
+  }
+  const referenceNote = referenceErrors.length ? `Okunamayan kayıtlar: ${referenceErrors.join("; ")}` : "";
   let note = "";
   if (!midsceneModel(current).error) {
     let decision = null;
     let skills = [];
-    let recent = [];
     try {
       const catalog = qaCatalog(configs, listCases(casesDir));
-      const history = conversationId ? chatConversation(user.id, Number(conversationId)) : [];
-      recent = history.filter((item) => item.role === "user").slice(-3).reverse().map((item) => item.text);
       skills = selectSkills(loadSkills([builtinSkillsDir, customSkillsDir]), [text, ...recent]);
-      decision = normalizeDecision(await askQaAgent({ settings: current, text, catalog, conversation: conversationContext(history), skills, language: lang }), catalog);
+      decision = normalizeDecision(await askQaAgent({ settings: current, text, catalog, conversation: conversationContext(history), references, skills, language: lang }), catalog);
     } catch (error) {
       audit(db, user.email, "qa_agent_failed", error.message);
       note = `QA ajanı bu cümleyi planlayamadı (${error.message}); cümleyi kurallarla yorumladım.`;
     }
     if (decision) {
       audit(db, user.email, "qa_agent", `${decision.intent} · beceriler: ${skills.map((skill) => skill.id).join(", ")}`);
-      return { ...(await actOnDecision(user, text, decision, configs, skills, recent)), skills: skills.map((skill) => (skill.source === "custom" ? skill.name : localize(skill.name, lang))) };
+      const issueKey = references.find((item) => item.kind === "jira")?.key;
+      // Cases designed from an issue carry its key, so the run, the report and TestRail trace back to it.
+      if (decision.intent === "scenario" && issueKey) {
+        const tag = (title) => (title.includes(issueKey) ? title : `${issueKey} · ${title}`);
+        decision.title = tag(decision.title);
+        decision.cases = decision.cases.map((item) => ({ ...item, title: tag(item.title) }));
+      }
+      const result = await actOnDecision(user, text, decision, configs, skills, recent);
+      return {
+        ...result,
+        reply: [referenceNote, result.reply].filter(Boolean).join("\n"),
+        skills: skills.map((skill) => (skill.source === "custom" ? skill.name : localize(skill.name, lang))),
+        ...(references.length ? { references: references.map(({ kind, key, url, title }) => ({ kind, key, url, title })) } : {}),
+      };
     }
+  }
+  // Test cases can only be designed from a Jira issue or Confluence page by the model.
+  if (references.length) {
+    const named = references.map((item) => item.key).join(", ");
+    return { reply: [note, `${named} okundu, ama test case çıkarmak için bir model bağlı olmalı (Ayarlar → Model).`].filter(Boolean).join("\n") };
   }
   const result = await ruleBasedChat(user, text, clients);
   return note ? { ...result, reply: `${note}\n${result.reply}` } : result;
@@ -861,6 +888,16 @@ const server = createServer(async (req, res) => {
         return send(res, 200, { suites: suites.map((suite) => ({ ...suite, client_id: projects.find((item) => item.suite_id === suite.id)?.id ?? null })) });
       } catch (error) {
         return send(res, 200, { suites: [], reason: error.message });
+      }
+    }
+    if (req.method === "POST" && url.pathname === "/api/settings/atlassian-test") {
+      try {
+        const checked = await testAtlassian(settings());
+        if (checked.skipped) return send(res, 400, { error: checked.reason });
+        audit(db, user.email, "atlassian_test", checked.confluence);
+        return send(res, 200, checked);
+      } catch (error) {
+        return send(res, 400, { error: error.message });
       }
     }
     if (req.method === "POST" && url.pathname === "/api/settings/farm-test") {

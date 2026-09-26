@@ -494,3 +494,55 @@ test("QA becerileri: admin listeler, özel beceri ekler, yerleşiği ezer ve sil
   assert.equal((await call(admin.cookie, "/api/skills/qa-core", "DELETE")).status, 404, "yerleşik beceri silinmez");
   assert.equal((await call(admin.cookie, "/api/skills/proje-giris", "DELETE")).status, 200);
 });
+
+test("Jira kaydı chat'te okunur ve QA ajanına gider; token maskelenir, bağlantı testi çalışır", async () => {
+  await ready();
+  const admin = await login("mercury@test.com", "Mercury");
+  const call = (path, method = "GET", body) => fetch(`${base}${path}`, {
+    method, headers: { "content-type": "application/json", cookie: admin.cookie }, body: body ? JSON.stringify(body) : undefined,
+  });
+  const modelBodies = [];
+  const fake = createServer(async (req, res) => {
+    const reply = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.url.startsWith("/v1/chat/completions")) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      modelBodies.push(JSON.parse(Buffer.concat(chunks).toString()));
+      return reply(200, { choices: [{ message: { content: '{"intent":"reply","reply":"PROJ-7 iki kabul kriteri içeriyor."}' } }] });
+    }
+    if (req.headers.authorization !== "Bearer pat-jira") return reply(401, {});
+    if (req.url.startsWith("/rest/api/2/myself")) return reply(200, { displayName: "QA Bot" });
+    if (req.url.startsWith("/rest/api/2/issue/PROJ-7/remotelink")) return reply(200, []);
+    if (req.url.startsWith("/rest/api/2/issue/PROJ-7")) {
+      return reply(200, { key: "PROJ-7", names: { customfield_1: "Kabul Kriterleri" }, fields: { summary: "Şifre sıfırlama", description: "Kullanıcı şifresini sıfırlar.", customfield_1: "Bağlantı e-postayla gelir" } });
+    }
+    return reply(404, { errorMessages: ["Issue does not exist"] });
+  });
+  await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+  const host = `http://127.0.0.1:${fake.address().port}`;
+  try {
+    assert.equal((await call("/api/settings/atlassian-test", "POST")).status, 400, "ayar yokken bağlantı testi hata verir");
+    const saved = await (await call("/api/settings", "PUT", { jira_host: host, jira_user: "", jira_api_token: "pat-jira" })).json();
+    assert.notEqual(saved.jira_api_token, "pat-jira", "token yanıtta maskelenir");
+    const checked = await (await call("/api/settings/atlassian-test", "POST")).json();
+    assert.deepEqual([checked.ok, checked.jiraUser, checked.confluence], [true, "QA Bot", "missing"]);
+
+    const missing = await (await call("/api/chat", "POST", { message: "PROJ-99 task'ı için test case çıkar ve koş" })).json();
+    assert.match(missing.reply, /Jira\/Confluence kaydı okunamadı:\nPROJ-99: Jira'da bu kayıt yok/);
+    const noModel = await (await call("/api/chat", "POST", { message: "PROJ-7 için test case çıkar ve koş" })).json();
+    assert.match(noModel.reply, /PROJ-7 okundu, ama test case çıkarmak için bir model bağlı olmalı/);
+
+    await call("/api/settings", "PUT", { model_provider: "custom", model_base_url: `${host}/v1`, model_api_key: "model-key", model_name: "gpt-5-mini" });
+    const first = await (await call("/api/chat", "POST", { message: "PROJ-7'ye bir bakalım" })).json();
+    const followUp = await (await call("/api/chat", "POST", { message: "bu task için test case çıkart ve koş", conversationId: first.conversationId })).json();
+    assert.equal(followUp.reply, "PROJ-7 iki kabul kriteri içeriyor.");
+    assert.deepEqual(followUp.references, [{ kind: "jira", key: "PROJ-7", url: `${host}/browse/PROJ-7`, title: "Şifre sıfırlama" }]);
+    const sent = JSON.parse(modelBodies.at(-1).messages[1].content);
+    assert.equal(sent.references[0].key, "PROJ-7", "'bu task' önceki mesajdaki kaydı bulur");
+    assert.match(sent.references[0].text, /Kabul Kriterleri:\nBağlantı e-postayla gelir/);
+    assert.doesNotMatch(JSON.stringify(modelBodies), /pat-jira/, "Jira token'ı modele gitmez");
+  } finally {
+    await call("/api/settings", "PUT", { jira_host: "", jira_api_token: "", model_provider: "", model_base_url: "", model_api_key: "", model_name: "" });
+    fake.close();
+  }
+});

@@ -24,7 +24,7 @@ You think like a senior QA engineer who owns release quality, not like a command
 - **How many cases:**
   - Concrete action ("login ol", "kedi ara", "sepete ekle") → 1 case.
   - "… test et / dene" → 2–4 cases: happy path + the most important negatives.
-  - "detaylı / kapsamlı / uçtan uca / tüm senaryolar" → up to 5 cases, highest risk first.
+  - "detaylı / kapsamlı / uçtan uca / tüm senaryolar" → as many cases as the feature really needs, highest risk first; no fixed number, no padding.
   - "smoke / genel kontrol / site ayakta mı" → short cases that touch the main areas (see the smoke skill).
 - **Independent cases.** Each case starts from a freshly opened target; never rely on state left by another case. A case that needs login contains its own login steps.
 - **Titles** are short and say condition → expectation: "Giriş: hatalı şifre → hata mesajı, oturum açılmaz".

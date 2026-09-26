@@ -50,6 +50,7 @@ Mercury Test Runner herhangi bir şirketin herhangi bir projesinde kullanılacak
 - `src/adb.mjs`: ADB ikilisini bulma, `adb connect/disconnect`, anahtar okuma
 - `scripts/setup.mjs`: `npm start` öncesi (`prestart`) çalışır; sabit sürümlü paketleri, Chromium'u ve gerekirse Android platform-tools (ADB) kurar/eşitler
 - `src/integrations.mjs`: TestRail ve Mercury Farm HTTP istemcisi
+- `src/atlassian.mjs`: Jira/Confluence okuma istemcisi (yazmaz). `findReferences` (anahtar, `/browse/KEY`, Confluence `…/spaces/X/pages/ID` ve `pageId=`), `gatherReferences` (mesajdaki ya da "bu task" denince önceki mesajdaki kayıtları okur; görev denmeyen çıplak anahtarın 404'ü sessiz geçer, diğer hatalar döner), `testAtlassian`. Ayarlar `jira_host`, `jira_user` (boşsa PAT/Bearer), `jira_api_token`, `confluence_*` (boşsa Jira'nınkiler; Cloud'da `<jira>/wiki`). `handleChat` okunanları `askQaAgent({ references })` ile modele verir; senaryo ve case başlıklarına kayıt anahtarı eklenir. Hiçbiri okunamazsa model çağrılmadan hata yanıtı döner; token modele, yanıta veya rapora yazılmaz
 - `src/accounts.mjs`: test hesap kaynakları. `normalizeSpec` (eski kurulumların üst düzey `tokenHeader`/`list.query` biçimini de okur), `fetchHttpAccount` (auth: none/login/header/basic, liste, alan ve ek alan eşlemesi, kullanıldı işareti), `createAccountStore` (kaynak CRUD, kaynağa özel şifreli giriş bilgileri, elle girilen liste `source_accounts`, `status`, `acquire`, `test`)
 - `src/providers.mjs`: model sağlayıcıları ve model API yardımcıları
 - `src/i18n.mjs`: sunucu mesajlarının TR/EN çevirisi. Sunucu mesajları Türkçe yazılır ve Türkçe saklanır; `send` yanıtı `x-mercury-lang` başlığına göre (`requestLang`) `localizeBody` ile çevirir. Anahtarlar Türkçe mesajlardır, `{ad}` yer tutucuları yakalanıp yeniden çevrilir; birleşik mesajlar (`" · "`, `" — "`, `"; "`, `": "`, satır sonu) parça parça çevrilir. Yalnız sunucunun yazdığı alanlar (`error`, `message`, `reply`, `issues`, `detail` …; `text` yalnız asistan mesajında) çevrilir, kullanıcı verisi dokunulmaz. Yeni bir sunucu mesajı eklerseniz İngilizcesini `EN` sözlüğüne ekleyin
@@ -69,7 +70,7 @@ Mercury Test Runner herhangi bir şirketin herhangi bir projesinde kullanılacak
 - Admin; kullanıcı, ayar, model, TestRail, farm ve kaynak yönetebilir.
 - User; chat, koşum listesi ve raporları kullanabilir.
 - Yetki kontrolü yalnız UI'da değil, her ilgili API route'unda yapılmalıdır.
-- Model, TestRail ve farm sırları veritabanında şifreli tutulur.
+- Model, TestRail, Jira/Confluence ve farm sırları veritabanında şifreli tutulur.
 - Parolalar düz metin tutulmaz.
 - Sırları loglara, HTML raporlara veya kullanıcı yanıtlarına yazmayın.
 
@@ -128,6 +129,8 @@ ayar testrail host https://testrail.example
 gece regresyonu örnek proje web chrome demek
 örnek proje'de login ol                      (model bağlıysa QA ajanı senaryo yazar)
 örnek proje'nin giriş testlerini koş          (QA ajanı case alt kümesi seçer)
+PROJ-123 için test case çıkar ve koş          (Jira kaydı okunur, QA ajanı case tasarlar)
+bu task için test case çıkart ve koş          (önceki mesajdaki Jira kaydı)
 ```
 
 ## Mevcut kapsam ve bilinçli eksikler
