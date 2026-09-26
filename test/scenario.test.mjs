@@ -84,3 +84,11 @@ test("mesajdaki cihaz seri numarası ve UDID adayları ayıklanır; paket, sür�
   assert.equal(isIosUdid("a".repeat(40)), true);
   assert.equal(isIosUdid("R58M12ABCDE"), false);
 });
+
+test("virgülle ayrılmış tek değer (kullanıcı adı) sonraki cümleye katılır, ayrı adım olmaz", () => {
+  const parsed = parseScenario("https://www.example.com/hosgeldiniz sitesine 22063133, Parola12* ile giriş yap");
+  assert.deepEqual(buildScenarioSteps(parsed).map((step) => [step.action, step.text]), [
+    ["launch", "{{launchUrl}}"],
+    ["aiAct", "22063133, Parola12* ile giriş yap"],
+  ]);
+});

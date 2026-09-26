@@ -231,6 +231,7 @@ test("Midscene Android ajanı Farm cihazında adımları yürütür; her adımı
   assert.deepEqual(calls.slice(0, 7), [["device", "10.0.0.5:7401", "/x/adb"], ["agent", "10.0.0.5:7401", "run-5-case-7"], ["record", "/x/adb", "10.0.0.5:7401", "5-7"], ["wake", "/x/adb", "10.0.0.5:7401"], ["terminate", "com.demo"], ["wake", "/x/adb", "10.0.0.5:7401"], ["launch", "com.demo"]]);
   assert.equal(calls.filter((call) => call[0] === "wake").length, 1 + mobileCase.steps.length, "ekran case başında ve her adımdan önce uyandırılır");
   assert.match(agentOptions[0].aiContexts.default, /completely black/, "AI siyah ekranı uyku olarak bilir");
+  assert.match(agentOptions[0].aiContexts.aiAct, /completely black[\s\S]*Unexpected interruptions/, "aiAct hem siyah ekran hem engel ipucunu alır");
   assert.deepEqual(calls.find((call) => call[0] === "aiInput"), ["aiInput", "E-posta", "qa@demo.com"]);
   assert.ok(calls.some((call) => call[0] === "back"));
   assert.deepEqual(calls.find((call) => call[0] === "record-stop"), ["record-stop", true, "7"]);

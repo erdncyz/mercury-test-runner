@@ -205,8 +205,8 @@ export function resolveScenarioTarget(parsed, configs, clients) {
 export function buildScenarioSteps(parsed, ignore = new Set()) {
   const steps = [{ action: "launch", text: "{{launchUrl}}" }];
   const meaningful = (text) => fold(text).split(" ").some((word) => word && !FILLER.has(word) && !ignore.has(word));
-  const clauses = parsed.text.split(/(?:[.;!?]+(?=\s|$)|\n+|,\s+|\s+(?:sonra|ardından|ardindan|daha sonra|then)\s+)/i);
-  for (let clause of clauses) {
+  const clauses = [];
+  for (let clause of parsed.text.split(/(?:[.;!?]+(?=\s|$)|\n+|,\s+|\s+(?:sonra|ardından|ardindan|daha sonra|then)\s+)/i)) {
     if (parsed.rawUrl) clause = clause.replace(new RegExp(escapeRegExp(parsed.rawUrl) + SUFFIX, "i"), " ");
     if (parsed.packageId) clause = clause.replace(new RegExp(escapeRegExp(parsed.packageId) + SUFFIX, "i"), " ");
     clause = clause.replace(/\s+/g, " ").trim().replace(/^(?:(?:ve|sonra|ardından|önce|once|and|then)\s+)+/i, "");
@@ -216,7 +216,13 @@ export function buildScenarioSteps(parsed, ignore = new Set()) {
     const tokens = clause.split(" ");
     let start = 0;
     while (start < tokens.length - 1 && fold(tokens[start]).split(" ").every((word) => !word || FILLER.has(word) || ignore.has(word))) start += 1;
-    clause = tokens.slice(start).join(" ");
+    clauses.push(tokens.slice(start).join(" "));
+  }
+  // "…sitesine 22063133, Ada12345* ile giriş yap": a lone value is part of the next clause, not a step of its own.
+  for (let index = clauses.length - 2; index >= 0; index -= 1) {
+    if (!clauses[index].includes(" ") && !hasScenarioAction(clauses[index])) clauses.splice(index, 2, `${clauses[index]}, ${clauses[index + 1]}`);
+  }
+  for (let clause of clauses) {
     // "giriş yap ve hoş geldin yazısını doğrula" / "giriş yap ve 3 saniye bekle": the parts before are actions.
     const parts = clause.split(/\s+ve\s+/i);
     // "kedi yaz ve Enter'a bas", "sayfanın sonuna kadar kaydır" become key and scroll steps; the rest stays aiAct.

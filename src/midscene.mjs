@@ -270,6 +270,64 @@ export function shouldRetry(step, error) {
   return LOCATING.has(step.action) && NOT_FOUND.test(message);
 }
 
+export const STEP_RECOVERY = process.env.MERCURY_STEP_RECOVERY !== "0";
+const RECOVERY_TIMEOUT_MS = 120_000;
+
+// Given to every aiAct plan: cookie banners, pop-ups and system prompts are not the test, so the AI clears them itself.
+export const INTERRUPTION_HINT = "Unexpected interruptions are not part of the test. If a cookie consent banner, pop-up, modal dialog, "
+  + "system permission prompt, advertisement, newsletter, app update or rating dialog, or onboarding overlay covers the screen, "
+  + "first accept the cookies or close it (prefer Accept all, OK, Allow while using the app, Close, Not now, Skip), then continue with the task. "
+  + "If the task itself is about that dialog, follow the task instead.";
+
+const REDOABLE = new Set(["aiTap", "aiInput", "aiDoubleClick", "aiRightClick", "aiLongPress", "aiKeyboardPress", "aiAct", "aiAction", "ai"]);
+const NOT_RECOVERABLE = new Set(["launch", "sleep", "back", "home"]);
+
+function describeStep(step) {
+  return `${step.action}: ${stepLabel(step.action, step.args) || step.text || ""}`.replace(/"/g, "'").slice(0, 300);
+}
+
+// Steps that failed for a reason on the screen (not a bad step, a refused model or a step still running) may be recoverable.
+export function canRecover(step, error) {
+  if (error?.timeout || error?.fatal || NOT_RECOVERABLE.has(step.action)) return false;
+  const flag = step.args?.recover;
+  if (flag === false || /^(false|0|no|hayır|hayir)$/i.test(String(flag ?? ""))) return false;
+  return !MODEL_REFUSED.test(String(error?.message || error));
+}
+
+// When a step fails, the AI looks at the screen: an interruption that has nothing to do with the step (cookie consent,
+// pop-up, permission prompt …) is accepted or closed, and a previous action it swallowed is done again. Returns what
+// was done, or "" when the screen showed no interruption, so a genuine failure is never masked.
+export async function recoverFromInterruption(session, step, previous, vars) {
+  const { agent } = session;
+  if (typeof agent.aiBoolean !== "function" || typeof agent.aiAct !== "function") return "";
+  const blocked = await agent.aiBoolean(
+    `The test step "${describeStep(step)}" just failed. Is the screen covered or blocked by an interruption that is not part of `
+    + "that step, such as a cookie consent banner, pop-up, modal dialog, system permission prompt, advertisement, newsletter, "
+    + "app update or rating dialog, or onboarding overlay, that has to be accepted or closed first? Error or validation messages "
+    + "produced by the app itself, and anything the step is about, do not count. Answer false if unsure.",
+  );
+  if (blocked !== true) return "";
+  await agent.aiAct(
+    "Only clear the interruption that covers the screen: accept the cookie consent or close the pop-up, dialog or overlay "
+    + "(prefer Accept all, OK, Allow while using the app, Close, Not now, Skip). Do nothing else, and do not perform the test step "
+    + `"${describeStep(step)}" yourself.`,
+    { cacheable: false },
+  );
+  const notes = ["Ekrandaki engel kapatıldı"];
+  if (previous && previous.status === "passed" && REDOABLE.has(previous.action)) {
+    const swallowed = await agent.aiBoolean(
+      `An interruption covering the screen was just closed. It may have swallowed the earlier test step "${describeStep(previous)}". `
+      + "Does the screen clearly show that this earlier step did not take effect (the same button, form or screen is still waiting "
+      + "for it)? Answer false if unsure.",
+    ).catch(() => false);
+    if (swallowed === true) {
+      await runStep(session, previous, vars);
+      notes.push("önceki adım yeniden yapıldı");
+    }
+  }
+  return notes.join(" · ");
+}
+
 // Mobile screenshots arrive as large PNG data URLs; a JPEG keeps step thumbnails light. Falls back to the original.
 export async function screenshotFromDataUrl(dataUrl) {
   const match = /^data:image\/(png|jpe?g|webp);base64,(.+)$/is.exec(String(dataUrl || ""));
@@ -464,7 +522,7 @@ export function caseCacheId(platform, item, launchUrl) {
 
 export async function executeCases({
   runId, cases, vars, model, reportDir, onProgress, openCase, platform = "",
-  stepTimeout = STEP_TIMEOUT_MS, retries = STEP_RETRIES, retryDelayMs = 1500,
+  stepTimeout = STEP_TIMEOUT_MS, retries = STEP_RETRIES, retryDelayMs = 1500, recovery = STEP_RECOVERY,
 }) {
   mkdirSync(reportDir, { recursive: true });
   const secrets = [vars?.account?.password].filter(Boolean);
@@ -487,7 +545,10 @@ export async function executeCases({
           groupName: `Mercury #${runId}`,
           groupDescription: item.title,
           autoPrintReportMsg: false,
-          ...(item.context ? { aiContexts: { default: item.context } } : {}),
+          aiContexts: {
+            ...(item.context ? { default: item.context } : {}),
+            aiAct: [INTERRUPTION_HINT, item.context].filter(Boolean).join("\n\n"),
+          },
           ...(cacheId ? { cache: { id: cacheId } } : {}),
         },
       });
@@ -540,14 +601,33 @@ export async function executeCases({
       const allowed = step.args?.retry !== undefined && step.args.retry !== "" ? Math.max(0, Math.trunc(Number(step.args.retry)) || 0) : retries;
       const limit = stepTimeoutMs(step, stepTimeout);
       let firstError = null;
+      let checked = false;
+      let recovered = "";
       for (let attempt = 1; ; attempt += 1) {
         try {
           const detail = await withTimeout(runStep(session, step, caseVars), limit, `Adım ${Math.round(limit / 1000)} sn içinde bitmedi (zaman aşımı)`);
           step.status = "passed";
-          step.detail = firstError ? `${attempt}. denemede geçti · ilk deneme: ${shortError(firstError)}${detail ? ` · ${detail}` : ""}` : detail;
+          step.detail = firstError
+            ? `${attempt}. denemede geçti${recovered ? ` · ${recovered}` : ""} · ilk deneme: ${shortError(firstError)}${detail ? ` · ${detail}` : ""}`
+            : detail;
           break;
         } catch (error) {
-          if (attempt <= allowed && shouldRetry(step, error)) {
+          if (recovery && !checked && canRecover(step, error)) {
+            checked = true;
+            step.detail = `Ekran denetleniyor: ${shortError(error)}`;
+            progress();
+            recovered = await withTimeout(recoverFromInterruption(session, step, steps[position - 1], caseVars), RECOVERY_TIMEOUT_MS).catch(() => "");
+            if (recovered) {
+              firstError ||= error;
+              step.attempts = attempt + 1;
+              step.recovered = recovered;
+              step.detail = `${recovered} · yeniden deneniyor`;
+              progress();
+              continue;
+            }
+          }
+          // The attempt after a recovery does not use up the step's own safe retries.
+          if (attempt <= allowed + (recovered ? 1 : 0) && shouldRetry(step, error)) {
             firstError ||= error;
             step.attempts = attempt + 1;
             step.detail = `Yeniden deneniyor: ${shortError(error)}`;
@@ -556,7 +636,7 @@ export async function executeCases({
             continue;
           }
           step.status = "failed";
-          step.detail = firstError ? `${attempt} denemede de başarısız: ${shortError(error)}` : shortError(error);
+          step.detail = firstError ? `${recovered ? `${recovered} · ` : ""}${attempt} denemede de başarısız: ${shortError(error)}` : shortError(error);
           failed = true;
           break;
         }
@@ -593,6 +673,24 @@ export async function executeCases({
 }
 
 let sharedBrowsers = null;
+const browserAgents = new WeakMap();
+
+// Headless Chromium announces itself as "HeadlessChrome", which bot protection (WAF) answers with a "Request Rejected"
+// page instead of the site. Each case gets the browser's own user agent without that word.
+export async function realUserAgent(browser) {
+  if (!browserAgents.has(browser)) {
+    browserAgents.set(browser, (async () => {
+      const probe = await browser.newContext();
+      try {
+        const page = await probe.newPage();
+        return String(await page.evaluate(() => navigator.userAgent)).replace(/HeadlessChrome/g, "Chrome");
+      } finally {
+        await probe.close().catch(() => {});
+      }
+    })().catch(() => ""));
+  }
+  return browserAgents.get(browser);
+}
 
 // All web lanes of all runs on this server draw from one pool (see src/browser-pool.mjs).
 export function webBrowserPool(chromium) {
@@ -633,7 +731,12 @@ export async function runWebCases({ runId, cases, vars, model, reportDir, onProg
           lease = await browsers.acquire();
         }
         const { browser } = lease;
-        const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, recordVideo: { dir: videoDir } });
+        const userAgent = await realUserAgent(browser);
+        const context = await browser.newContext({
+          viewport: { width: 1280, height: 800 },
+          recordVideo: { dir: videoDir },
+          ...(userAgent ? { userAgent } : {}),
+        });
         // The browser outlives this lane, so a context left open by an unexpected error must still be closed here.
         contexts.add(context);
         const page = await context.newPage();
@@ -706,7 +809,9 @@ export async function runMobileCases({ platform, connection, appId, adbPath, run
     runId, cases, vars, model, reportDir, onProgress, platform,
     openCase: async ({ key, item, agentOptions }) => {
       // A dark screenshot otherwise reads as "nothing to act on" and the AI gives up instead of waking the device.
-      const aiContexts = { ...agentOptions.aiContexts, default: [BLACK_SCREEN_HINT, agentOptions.aiContexts?.default].filter(Boolean).join("\n\n") };
+      const withHint = (context) => [BLACK_SCREEN_HINT, context].filter(Boolean).join("\n\n");
+      const aiContexts = { ...agentOptions.aiContexts, default: withHint(agentOptions.aiContexts?.default) };
+      if (agentOptions.aiContexts?.aiAct) aiContexts.aiAct = withHint(agentOptions.aiContexts.aiAct);
       agentOptions = { ...agentOptions, aiContexts };
       let agent;
       if (platform === "android") {

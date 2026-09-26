@@ -110,6 +110,9 @@ test("senaryo hedefi: adres web'dir, paket mobildir, hedef yoksa sorulur; uydurm
   assert.throws(() => scenario({ configId: 11 }, [{ action: "aiAct", text: "{{env.SECRET}} yaz" }]), /bilinmeyen değişken/);
   assert.throws(() => scenario({ configId: 11 }, []), /adım yok/);
   assert.throws(() => scenario({ configId: 77 }), /katalogda olmayan/);
+  const invented = scenario({ url: "https://example.org/giris", configId: 1 });
+  assert.deepEqual([invented.intent, invented.target.launchUrl, invented.target.config], ["scenario", "https://example.org/giris", null], "yazılı adreste uydurma konfigürasyon yok sayılır");
+  assert.equal(scenario({ url: "https://example.org", configId: "null" }).target.config, null);
 });
 
 test("QA ajanı Midscene'ın modeline OpenAI uyumlu istekle katalog ve sohbetle sorar", async () => {

@@ -57,9 +57,9 @@ Writing steps (Midscene executes them: a vision agent that looks at the live scr
 Output
 {"intent":"run_suite|scenario|reply",
  "reply":"one or two sentences to the tester, in their language: what you will do and why, or your answer/question",
- "run":{"configIds":[1],"caseKeys":[]},
- "scenario":{"title":"short name of the whole scenario (what is being tested)","configId":1,"url":"","packageId":"","platform":"web|android|ios","cases":[{"title":"short test case title","steps":[]}]}}
-Omit "run" unless intent is run_suite and "scenario" unless intent is scenario.`;
+ "run":{"configIds":["ids from the catalog"],"caseKeys":[]},
+ "scenario":{"title":"short name of the whole scenario (what is being tested)","configId":"an id from the catalog, or null","url":"","packageId":"","platform":"web|android|ios","cases":[{"title":"short test case title","steps":[]}]}}
+Omit "run" unless intent is run_suite and "scenario" unless intent is scenario. Never use a configuration id that is not in the catalog; with an empty catalog configId is null.`;
 
 const clip = (value, max = MAX_TEXT) => {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -338,12 +338,15 @@ export function normalizeDecision(raw, catalog) {
   }
   if (intent !== "scenario") throw new Error(`bilinmeyen karar: ${clip(intent, 40) || "(boş)"}`);
   const scenario = raw.scenario || {};
-  const config = scenario.configId == null || scenario.configId === "" ? null : byId.get(Number(scenario.configId));
-  if (scenario.configId != null && scenario.configId !== "" && !config) throw new Error("model katalogda olmayan bir konfigürasyon seçti");
   const url = normalizeUrl(scenario.url);
   const rawPackage = String(scenario.packageId || "").trim();
   const packageId = /^[A-Za-z][\w-]*(\.[A-Za-z0-9_-]+)+$/.test(rawPackage) ? rawPackage : "";
   if (scenario.url && !url) throw new Error(`geçersiz adres: ${clip(scenario.url, 80)}`);
+  const configId = /^(|null|none|0)$/i.test(String(scenario.configId ?? "").trim()) ? null : scenario.configId;
+  const config = configId == null ? null : byId.get(Number(configId));
+  // A configuration only lends devices and test users to a written address or package, so a made-up id is dropped there;
+  // without one the configuration is the target itself and an unknown id cannot run.
+  if (configId != null && !config && !url && !packageId) throw new Error("model katalogda olmayan bir konfigürasyon seçti");
   const hint = ["web", "android", "ios"].includes(scenario.platform) ? scenario.platform : "";
   const platform = url ? "web" : packageId ? (hint === "ios" || /^com\.apple\./i.test(packageId) ? "ios" : config?.platform === "ios" ? "ios" : "android") : config?.platform || "";
   if (!platform) {

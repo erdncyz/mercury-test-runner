@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MIDSCENE_FAMILIES, MIDSCENE_FAMILY_OPTIONS, caseCacheId, detectFamily, executeCases, midsceneModel, resolveText, redactSecrets, screenshotFromDataUrl, shouldRetry, stepLabel, stepTimeoutMs, withMidsceneFamily } from "../src/midscene.mjs";
+import { INTERRUPTION_HINT, MIDSCENE_FAMILIES, MIDSCENE_FAMILY_OPTIONS, canRecover, caseCacheId, realUserAgent, detectFamily, executeCases, midsceneModel, resolveText, redactSecrets, screenshotFromDataUrl, shouldRetry, stepLabel, stepTimeoutMs, withMidsceneFamily } from "../src/midscene.mjs";
 
 const PNG_1PX = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -245,9 +245,11 @@ test("case bağlamı Midscene'a ajan düzeyinde AI bağlamı olarak verilir; hat
   const seen = [];
   const { agent, calls } = recordingAgent();
   await runOne([{ action: "aiAct", text: "giriş yap" }], agent, { context: "Giriş Hesabım menüsünde.", seen });
-  assert.deepEqual(seen[0].aiContexts, { default: "Giriş Hesabım menüsünde." });
+  assert.equal(seen[0].aiContexts.default, "Giriş Hesabım menüsünde.");
+  assert.match(seen[0].aiContexts.aiAct, /^Unexpected interruptions[\s\S]*cookie consent[\s\S]*\n\nGiriş Hesabım menüsünde\.$/, "aiAct engel ipucunu ve case bağlamını birlikte alır");
   await runOne([{ action: "aiAct", text: "x" }], agent, { seen });
-  assert.equal(seen[1].aiContexts, undefined, "bağlam yoksa Midscene varsayılanı kalır");
+  assert.equal(seen[1].aiContexts.default, undefined, "bağlam yoksa Midscene varsayılanı kalır");
+  assert.equal(seen[1].aiContexts.aiAct, INTERRUPTION_HINT);
   const bad = await runOne([{ action: "aiScroll", text: "Ekran · yan", args: { direction: "yan" } }], agent);
   assert.equal(bad.steps[0].detail, "Geçersiz kaydırma yönü: yan");
   assert.equal(bad.steps[0].attempts, undefined);
@@ -277,4 +279,58 @@ test("Midscene cache'i case, platform ve açılış adresine göre ayrılır; ş
   assert.deepEqual(calls.filter(([method]) => method === "aiAct").map((call) => call.length > 2 ? call[2] : null), [null, { cacheable: false }]);
   await runOne([{ action: "aiAct", text: "x" }], agent, { seen });
   assert.equal(seen[1].cache, undefined, "platform verilmezse cache kapalı");
+});
+
+test("adım bir engel yüzünden düşerse AI çerez/pop-up'ı kapatır, yuttuğu önceki eylemi yeniden yapar ve adımı tekrar dener", async () => {
+  let blocked = true;
+  const { agent, calls } = recordingAgent({
+    aiBoolean: (prompt) => (/just failed/.test(prompt) ? blocked : /swallowed/.test(prompt)),
+    aiAct: (prompt) => { if (/Only clear the interruption/.test(prompt)) blocked = false; },
+    aiWaitFor: () => { if (blocked || calls.filter(([method]) => method === "aiTap").length < 2) throw new Error("waitFor timeout: cookie consent modal is shown"); },
+  });
+  const result = await runOne([
+    { action: "aiTap", text: "Giriş Yap butonu" },
+    { action: "aiWaitFor", text: "Profil simgesi görünüyor" },
+    { action: "aiAssert", text: "Hesabım görünür" },
+  ], agent);
+  assert.equal(result.status, "passed", result.message);
+  assert.deepEqual(calls.map(([method]) => method), ["aiTap", "aiWaitFor", "aiBoolean", "aiAct", "aiBoolean", "aiTap", "aiWaitFor", "aiAssert"]);
+  assert.deepEqual(calls[3][2], { cacheable: false }, "kurtarma eylemi cache'e yazılmaz");
+  assert.match(calls[2][1], /aiWaitFor: Profil simgesi görünüyor/);
+  assert.match(calls[4][1], /aiTap: Giriş Yap butonu/);
+  assert.equal(result.steps[1].attempts, 2);
+  assert.match(result.steps[1].detail, /^2\. denemede geçti · Ekrandaki engel kapatıldı · önceki adım yeniden yapıldı · ilk deneme: waitFor timeout/);
+});
+
+test("ekranda engel yoksa AI hiçbir şey yapmaz; gerçek hata olduğu gibi düşer; kurtarma kapatılabilir", async () => {
+  const { agent, calls } = recordingAgent({ aiBoolean: () => false, aiWaitFor: () => { throw new Error("waitFor timeout: no profile icon"); } });
+  const result = await runOne([{ action: "aiWaitFor", text: "Profil" }], agent);
+  assert.equal(result.status, "failed");
+  assert.equal(result.steps[0].detail, "waitFor timeout: no profile icon");
+  assert.deepEqual(calls.map(([method]) => method), ["aiWaitFor", "aiBoolean"], "engel yoksa kapatma denenmez");
+
+  const off = recordingAgent({ aiBoolean: () => true, aiWaitFor: () => { throw new Error("waitFor timeout"); } });
+  await runOne([{ action: "aiWaitFor", text: "Profil", args: { recover: false } }], off.agent);
+  await runOne([{ action: "aiWaitFor", text: "Profil" }], off.agent, { run: { recovery: false } });
+  assert.deepEqual(off.calls.map(([method]) => method), ["aiWaitFor", "aiWaitFor"], "adımda recover: false ve MERCURY_STEP_RECOVERY=0 kapatır");
+
+  assert.equal(canRecover({ action: "aiAssert" }, new Error("Assertion failed")), true);
+  assert.equal(canRecover({ action: "aiTap" }, Object.assign(new Error("zaman aşımı"), { timeout: true })), false, "hâlâ çalışıyor olabilir");
+  assert.equal(canRecover({ action: "aiTap" }, new Error("401 Invalid API key")), false);
+  assert.equal(canRecover({ action: "launch" }, new Error("net::ERR")), false);
+  assert.equal(canRecover({ action: "aiScroll" }, Object.assign(new Error("Geçersiz"), { fatal: true })), false);
+});
+
+test("başsız tarayıcı 'HeadlessChrome' kimliğini gizler; kimlik tarayıcı başına bir kez okunur", async () => {
+  let probes = 0;
+  const browser = {
+    async newContext() {
+      probes += 1;
+      return { async newPage() { return { evaluate: async () => "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 HeadlessChrome/153.0 Safari/537.36" }; }, async close() {} };
+    },
+  };
+  assert.equal(await realUserAgent(browser), "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/153.0 Safari/537.36");
+  await realUserAgent(browser);
+  assert.equal(probes, 1);
+  assert.equal(await realUserAgent({ newContext: async () => { throw new Error("kapalı"); } }), "", "okunamazsa varsayılan kalır");
 });
